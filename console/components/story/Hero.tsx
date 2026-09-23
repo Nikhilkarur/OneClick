@@ -13,7 +13,6 @@ export function stepCount(data: StoryData) {
 export function Hero({ data }: { data: StoryData }) {
   const root = useRef<HTMLElement>(null);
   const steps = stepCount(data);
-  const links = data.resolve.counts.catalog;
 
   useGSAP(
     () => {
@@ -105,10 +104,6 @@ export function Hero({ data }: { data: StoryData }) {
                 <path d="M12 5v14m0 0-6-6m6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2.2" />
               </svg>
             </a>
-            <span className="hero-facts">
-              <b>{data.plan.actions.length}</b> actions <i /> <b>{steps}</b> grounded steps <i /> <b>{links}</b>{" "}
-              one-tap links
-            </span>
           </div>
         </div>
       </div>

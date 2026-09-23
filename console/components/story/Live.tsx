@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Galaxy, Mark } from "@/components/story/Galaxy";
+import { Galaxy } from "@/components/story/Galaxy";
+import { Mark } from "@/components/story/Logo";
 import { gsap, useGSAP } from "@/lib/gsap";
 import type { PlanContext } from "@/lib/plan";
 import type { Preset, StoryData } from "@/lib/story";
@@ -239,7 +240,7 @@ function LiveScreen({
 
   return (
     <div className="sc sc-live sc-live-empty">
-      <span className={`lv-orb${status === "running" ? " spin" : ""}`}>
+      <span className={`lv-orb${status === "running" ? " busy" : ""}`}>
         <Mark />
       </span>
       <h3>{title}</h3>
