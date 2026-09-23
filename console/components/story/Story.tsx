@@ -1,10 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import { useRef } from "react";
 import { Compile } from "@/components/story/Compile";
 import { Complaint } from "@/components/story/Complaint";
 import { Finale } from "@/components/story/Finale";
-import { Mark } from "@/components/story/Galaxy";
 import { Grounding } from "@/components/story/Grounding";
 import { Hero } from "@/components/story/Hero";
 import { Live } from "@/components/story/Live";
@@ -136,9 +136,9 @@ function Nav() {
   return (
     <header className="nav" ref={bar} data-tone="dark">
       <a className="nav-brand" href="#top" onClick={jump("#top")}>
-        <Mark className="nav-mark" />
+        <Image className="nav-samsung" src="/samsung-logo.png" alt="Samsung" width={282} height={61} priority />
+        <i className="nav-div" aria-hidden />
         <span>OneClick</span>
-        <em>for Galaxy</em>
       </a>
       <nav className="nav-links" aria-label="Sections">
         {LINKS.map(([label, hash]) => (

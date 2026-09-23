@@ -220,20 +220,81 @@ body:has(.st) {
   font-weight: 700;
   letter-spacing: -0.04em;
 }
+.nav-samsung {
+  height: 26px;
+  width: auto;
+  display: block;
+  filter: brightness(0);
+  transition: filter 0.35s ease;
+}
+.nav[data-tone="light"] .nav-samsung {
+  filter: brightness(0) invert(1);
+}
+.nav-div {
+  width: 1.5px;
+  height: 30px;
+  background: currentColor;
+  opacity: 0.35;
+}
+
 .nav-mark {
   width: 36px;
   height: 36px;
+  flex: none;
+  filter: drop-shadow(0 6px 14px rgba(20, 40, 160, 0.28));
 }
-.nav-brand em {
-  font-style: normal;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 5px 11px;
-  border-radius: 999px;
-  box-shadow: inset 0 0 0 1.5px currentColor;
-  opacity: 0.7;
-  margin-left: 4px;
+
+/* The mark clicks: the cursor presses toward its tip and the burst fires out of it. Once as the
+   page opens, again on hover, and on a loop while the live section waits on the engine. */
+.ocm-cursor,
+.ocm-burst {
+  transform-box: view-box;
+  transform-origin: 15.2px 13.2px;
+}
+.nav-mark .ocm-cursor {
+  animation: ocm-press 0.6s cubic-bezier(0.3, 1.4, 0.5, 1) 1.1s;
+}
+.nav-mark .ocm-burst {
+  animation: ocm-burst 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.2) 1.1s;
+}
+/* Identical keyframes under a second name, so hovering restarts the click. */
+.nav-brand:hover .ocm-cursor {
+  animation: ocm-press-again 0.6s cubic-bezier(0.3, 1.4, 0.5, 1);
+}
+.nav-brand:hover .ocm-burst {
+  animation: ocm-burst-again 0.6s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+@keyframes ocm-press {
+  35% {
+    transform: scale(0.82);
+  }
+}
+@keyframes ocm-press-again {
+  35% {
+    transform: scale(0.82);
+  }
+}
+@keyframes ocm-burst {
+  0%,
+  30% {
+    transform: scale(0.3);
+    opacity: 0;
+  }
+  65% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+}
+@keyframes ocm-burst-again {
+  0%,
+  30% {
+    transform: scale(0.3);
+    opacity: 0;
+  }
+  65% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
 }
 .nav-links {
   display: flex;
@@ -898,24 +959,6 @@ body:has(.st) {
   align-items: center;
   gap: 18px 28px;
   margin-top: 6px;
-}
-.hero-facts {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  font-size: 16px;
-  color: rgba(255, 255, 255, 0.78);
-}
-.hero-facts b {
-  color: #fff;
-  font-weight: 700;
-}
-.hero-facts i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.4);
 }
 .hero-phone {
   position: absolute;
@@ -3362,13 +3405,11 @@ body:has(.st) {
   width: 11cqw;
   height: 11cqw;
 }
-.lv-orb.spin svg {
-  animation: lvSpin 1.2s linear infinite;
+.lv-orb.busy .ocm-cursor {
+  animation: ocm-press 0.9s cubic-bezier(0.3, 1.4, 0.5, 1) infinite;
 }
-@keyframes lvSpin {
-  to {
-    transform: rotate(360deg);
-  }
+.lv-orb.busy .ocm-burst {
+  animation: ocm-burst 0.9s cubic-bezier(0.2, 0.9, 0.3, 1.2) infinite;
 }
 
 /* proof additions */
@@ -3442,10 +3483,7 @@ body:has(.st) {
   .nav-links {
     display: none;
   }
-  .nav-brand em {
-    display: none;
-  }
-  .hero {
+    .hero {
     height: auto;
     min-height: 0;
     padding: 110px 0 0;

@@ -104,14 +104,3 @@ function StatusBar() {
     </div>
   );
 }
-
-/** The OneClick app mark: a pressed button and its ripple. */
-export function Mark({ className = "" }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 32 32" aria-hidden>
-      <rect width="32" height="32" rx="10" fill="#1d5cff" />
-      <circle cx="16" cy="16" r="9" fill="none" stroke="#fff" strokeOpacity=".45" strokeWidth="2" />
-      <circle cx="16" cy="16" r="4.2" fill="#d4ff3a" />
-    </svg>
-  );
-}

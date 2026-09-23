@@ -1,5 +1,6 @@
 import type { PlanContext } from "@/lib/plan";
-import { Mark, Wallpaper } from "@/components/story/Galaxy";
+import { Wallpaper } from "@/components/story/Galaxy";
+import { Mark } from "@/components/story/Logo";
 
 /**
  * The One UI screens the story's phone shows. Static markup only: the sections animate them by
