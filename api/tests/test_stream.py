@@ -114,9 +114,19 @@ def test_missing_fixtures_directory_yields_an_error_frame(monkeypatch, tmp_path)
     assert name == "error" and ev["stage"] == "error"
 
 
-def test_live_mode_reports_the_unimplemented_pipeline_as_an_error_frame(monkeypatch):
+def test_live_mode_streams_the_real_pipeline_then_serves_the_repeat_from_cache(monkeypatch):
+    from app import cache
+
     monkeypatch.setattr(settings, "stream_mock", False)
+    cache.clear()
     r = client.post("/v1/troubleshoot/stream", json=_request("touch_lag"))
     assert r.status_code == 200 and "x-mock" not in r.headers
-    ((name, ev),) = _frames(r.text)
-    assert name == "error" and "not implemented" in ev["summary"]
+    frames = _frames(r.text)
+    assert [name for name, _ in frames] == STAGES
+    done = frames[-1][1]["detail"]
+    ContextDeeplinkResponse.model_validate(done)
+    assert done["contexts"] and done["meta"]["cache_hit"] is False
+    again = _frames(client.post("/v1/troubleshoot/stream", json=_request("touch_lag")).text)
+    assert [name for name, _ in again] == ["cache", "done"]
+    assert again[-1][1]["detail"]["meta"]["cache_tier"] == "exact"
+    assert again[-1][1]["detail"]["contexts"] == done["contexts"]

@@ -19,7 +19,7 @@
         "siis_hash_match": true,
         "slots_match": true,
         "key": "6503ff4cd4f98d6e",
-        "threshold": 0.85
+        "threshold": 0.8
       }
     },
     "meta": {
@@ -52,7 +52,7 @@
         "siis_hash_match": true,
         "slots_match": true,
         "key": "6503ff4cd4f98d6e",
-        "threshold": 0.85
+        "threshold": 0.8
       }
     },
     "meta": {
