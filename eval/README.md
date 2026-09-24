@@ -75,8 +75,11 @@ The mapping and cache runs load the Screen Graph and vector index, so build them
 python eval/ablation.py                 # section 5: mapping variants on the gold set -> results/ablation.json
 python eval/loadtest.py --mode cache    # sections 3-4: cache paths in-process      -> results/loadtest.json
 python eval/loadtest.py --mode api --api http://localhost:8000   # adds cold, over HTTP (needs the engine)
+python eval/judge.py                    # section 2: step accuracy on results.jsonl  -> results/judge.json
 python eval/report.py                   # rewrites docs/metrics.md in the Appendix C layout
 ```
+
+For honest cold numbers, start the API on an empty cache: `ONECLICK_SQLITE=/tmp/cold.sqlite uvicorn app.main:app` from `api/`, with the LLM keys in `.env`. The API mode waits `--settle` seconds (default 12) after the cold pass, because each answer's 8–10 variations are generated in the background and paraphrase hits depend on them.
 
 **`ablation.py`** maps every gold step with each variant and scores them the same way:
 
@@ -91,6 +94,16 @@ python eval/report.py                   # rewrites docs/metrics.md in the Append
 Deeplink relevance (0–2) follows `evalkit/relevance.py`: 2 for the exact entry, 1 for the right screen with the wrong control or a labelled parent menu, 0 for a wrong screen or any link on a physical step. Results are split by labeller, because the mapping lane tuned its thresholds on this file.
 
 **`loadtest.py --mode cache`** warms the real cache with the 20 kit queries (original phrasing only, so the paraphrase hit rate is a lower bound), then times ≥ 30 lookups per path and counts false hits on the near-miss set. `--sweep` repeats it across similarity thresholds.
+
+**`judge.py`** asks an LLM to grade each plan against its complaint and article: a verdict per step (`correct` / `partial` / `wrong`, with the main issue: `not_an_instruction`, `fragment`, `irrelevant`, `unsupported`, `duplicate`, `wrong_action`), 0–2 per catalog link, the article fixes the plan leaves out, whether the order works, and a 0–3 score for completeness, correctness and ordering. The rubric is `prompts/judge.v1.md`. The step issues are the part to read when tuning the extraction prompt.
+
+```bash
+python eval/judge.py --dry-run                     # print the first prompt; no key needed
+python eval/judge.py                               # the 20 plans in results.jsonl
+python eval/judge.py --api http://localhost:8000   # kit + the 15 unseen scenarios, live
+```
+
+The judge should not grade its own work: it uses Gemini when `GEMINI_API_KEY` is set and Mistral otherwise (`--provider`, `--model` override), and any plan written by the judge's model family is counted as self-graded in the output and the report. A plan with no steps scores 0 without a call. Judgments are cached in `results/judge_cache.json`, so a re-run after an engine change only pays for the plans that changed. Failed calls are retried with backoff and then reported as unjudged, never scored.
 
 **`report.py`** fills only what a run measured. An empty plan passes every format rule trivially, so section 1 stays "not measured" until the engine returns non-empty plans.
 
@@ -121,7 +134,7 @@ The `gates.json` report is uploaded as an artifact.
 | `ablation.py` | The mapping ablation (metrics.md sections 2 and 5) |
 | `loadtest.py` | Latency at N ≥ 30 per path, cache hit and false-hit rates (sections 3 and 4) |
 | `report.py` | Writes `docs/metrics.md` in the Appendix C layout |
-| `judge.py` | Step accuracy 0–3 (not written yet: needs the engine's extracted steps) |
+| `judge.py`, `prompts/judge.v1.md` | LLM judge: step accuracy 0–3, per-step issues, end-to-end link relevance 0–2 (section 2) |
 | `sets/` | Paraphrase, near-miss, unseen and adversarial sets (see `sets/README.md`) |
 | `sets/validate_sets.py` | Validates the four sets and `data/gold/deeplink_gold.jsonl`; runs in CI |
 | `tools/label_gold.py` | Interactive labelling helper for the gold set (see `data/gold/README.md`) |

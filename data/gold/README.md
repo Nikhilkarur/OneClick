@@ -1,8 +1,8 @@
 # Gold labels
 
 `deeplink_gold.jsonl` is the hand-labelled answer key for link resolution. It is what
-`eval/judge.py` scores deeplink relevance and precision@1 against, and what `eval/ablation.py`
-compares the retrieval variants on. Target is 100 steps, roughly 33 each.
+`eval/ablation.py` scores deeplink relevance and precision@1 against, comparing the retrieval
+variants on it. Target is 100 steps, roughly 33 each.
 
 One line per step:
 

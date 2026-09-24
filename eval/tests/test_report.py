@@ -128,3 +128,45 @@ def test_cache_mode_latency_and_hit_rate(tmp_path):
 @pytest.mark.parametrize("value", [None, 0.5])
 def test_pct(value):
     assert report.pct(value) == ("not measured" if value is None else "50.0%")
+
+
+JUDGE = {
+    "judged": 20,
+    "failed": 0,
+    "empty_plans": 1,
+    "self_graded": 0,
+    "step_accuracy_mean": 2.35,
+    "by_source": {"kit": {"n": 20, "step_accuracy_mean": 2.35}},
+    "steps": {
+        "n": 60,
+        "verdicts": {"correct": 50, "partial": 6, "wrong": 4},
+        "issues": {"not_an_instruction": 4},
+    },
+    "link_relevance_mean": 1.8,
+    "links_judged": 10,
+    "order_problems": 2,
+    "plans_missing_a_fix": 3,
+    "judge_model": "gemini-3-flash-preview",
+    "prompt_version": "judge-v1",
+    "source": "results.jsonl",
+}
+
+
+def test_judge_fills_step_accuracy(tmp_path):
+    md = render(tmp_path, judge=JUDGE)
+    assert "| 2.35 |" in row(md, "Step accuracy")
+    assert "gemini-3-flash-preview as judge" in md
+    assert "not an instruction 4" in md and "2 plans with an ordering problem" in md
+    assert "step accuracy (`judge.py`)" not in md
+
+
+def test_api_cold_cost_and_models(tmp_path):
+    cold = {"n": 35, "hits": 0, "hit_rate": 0.0, "p50_ms": 3900.0, "p95_ms": 6400.0, "mean_cost_usd": 0.0}
+    cold["models"] = {"ministral-14b-latest": 30, "rules": 5}
+    load = {"api": {"source": "HTTP against x", "cold": cold}}
+    args = SimpleNamespace(model=None, embeddings="e", env="x", results_dir=tmp_path)
+    (tmp_path / "loadtest.json").write_text(json.dumps(load))
+    md = report.build(args)
+    assert "| $0.0000 |" in row(md, "Cold query average inference cost")
+    assert "**Model(s):** ministral-14b-latest (30 cold queries), rules (5 cold queries)" in md
+    assert "| 6400.0 |" in row(md, "Cold query - full pipeline")

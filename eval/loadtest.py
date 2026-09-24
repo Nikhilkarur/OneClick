@@ -28,6 +28,7 @@ import hashlib
 import json
 import sys
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -162,8 +163,18 @@ def run_cache(
 # ------------------------------------------------------------------------------------------------ api
 
 
+def _meta(result) -> dict:
+    meta = result.body.get("meta") if isinstance(result.body, dict) else None
+    return meta if isinstance(meta, dict) else {}
+
+
 def run_api(
-    base_url: str, kit: list[KitRow], unseen: list[dict], paraphrases: list[dict], near_misses: list[dict]
+    base_url: str,
+    kit: list[KitRow],
+    unseen: list[dict],
+    paraphrases: list[dict],
+    near_misses: list[dict],
+    settle_s: float = 0.0,
 ):
     from evalkit.client import ApiClient
 
@@ -175,34 +186,61 @@ def run_api(
         raise SystemExit(f"{base_url}/health returned {health.status_code}: {health.error or health.body}")
 
     def timed(results, hit_expected: bool | None) -> dict:
-        server = [r.server_ms for r in results if r.server_ms is not None]
-        client_ms = [r.client_ms for r in results]
+        # Latency is timed on the path the row names: cache hits for repeat and paraphrase, misses
+        # (the full pipeline) for cold. A kit row can hit a plan cached for another row with the
+        # same article, and a paraphrase the cache misses runs cold; neither belongs in the other's
+        # percentiles. Near misses keep every call, since their point is the false-hit rate.
         hits = sum(bool(r.cache_hit) for r in results)
         ok = sum(r.ok for r in results)
+        timed_on = results
+        if hit_expected is True:
+            timed_on = [r for r in results if r.cache_hit]
+        elif hit_expected is None:
+            timed_on = [r for r in results if not r.cache_hit]
+        server = [r.server_ms for r in timed_on if r.server_ms is not None]
+        client_ms = [r.client_ms for r in timed_on]
         out = summarise(server or client_ms, hits, len(results), ok_200=ok)
+        out["timed_n"] = len(timed_on)
+        out["enough_samples"] = len(timed_on) >= MIN_N
         out["client_p50_ms"] = round(percentile(client_ms, 50) or 0.0, 2)
         out["client_p95_ms"] = round(percentile(client_ms, 95) or 0.0, 2)
         out["latency_source"] = "X-Latency-Ms" if server else "client"
         if hit_expected is False:
             out["false_hit_rate"] = rate(hits, len(results))
+        costs = [c for c in (_meta(r).get("cost_usd") for r in timed_on) if isinstance(c, (int, float))]
+        if costs:
+            out["mean_cost_usd"] = round(sum(costs) / len(costs), 6)
+        out["models"] = dict(Counter(str(_meta(r).get("model") or "none") for r in timed_on).most_common())
         return out
 
     cold = [client.troubleshoot(row.query, row.siis) for row in kit]
     cold += [client.troubleshoot(u["query"], u.get("siis_response")) for u in unseen]
-    if any(r.cache_hit for r in cold):
+    warm = sum(bool(r.cache_hit) for r in cold)
+    if warm:
         notes.append(
-            "some cold-pass calls reported a cache hit: the API did not start with an empty SIIS cache"
+            f"{warm} of {len(cold)} cold-pass calls were answered from the cache (another request with the "
+            "same article had just been solved, or the API did not start empty); cold latency is timed on "
+            "the misses only"
         )
+    if settle_s > 0:
+        # The 8-10 variations are generated in the background after each answer; paraphrase hits
+        # depend on them being indexed, so let the last cold calls' variations land first.
+        time.sleep(settle_s)
     repeat = [client.troubleshoot(row.query, row.siis) for _ in range(2) for row in kit]
     para = [client.troubleshoot(p["query"], siis[p["row_id"]]) for p in paraphrases]
     near = [client.troubleshoot(m["query"], siis[m["row_id"]]) for m in near_misses]
+    leaked = [
+        {"id": m.get("id"), "query": m["query"], "differs_in": m.get("differs_in"), "tier": r.cache_tier}
+        for m, r in zip(near_misses, near, strict=True)
+        if r.cache_hit
+    ]
     client.close()
     return {
         "source": f"HTTP against {base_url}",
         "cold": timed(cold, None),
         "repeat": timed(repeat, True),
         "paraphrase": timed(para, True),
-        "near_miss": timed(near, False),
+        "near_miss": {**timed(near, False), "leaked": leaked},
         "notes": notes,
     }
 
@@ -229,7 +267,12 @@ def print_section(name: str, section: dict) -> None:
         if not s:
             continue
         hit = "-" if s["hit_rate"] is None else f"{s['hit_rate']:.0%}"
-        print(f"  {path:<11} n={s['n']:<4} hit {hit:>5}   p50 {s['p50_ms']} ms   p95 {s['p95_ms']} ms")
+        cost = f"   ${s['mean_cost_usd']:.4f}/query" if "mean_cost_usd" in s else ""
+        print(
+            f"  {path:<11} n={s['n']:<4} timed {s.get('timed_n', s['n']):<4} hit {hit:>5}   p50 {s['p50_ms']} ms   p95 {s['p95_ms']} ms{cost}"
+        )
+        if path == "cold" and s.get("models"):
+            print(f"  cold answers by model: {s['models']}")
     nm = section.get("near_miss") or {}
     if "above_threshold_without_guard" in nm:
         print(
@@ -245,6 +288,9 @@ def main() -> None:
     parser.add_argument("--mode", choices=["cache", "api"], required=True)
     parser.add_argument("--api", help="base URL for --mode api")
     parser.add_argument("--sweep", action="store_true", help="cache mode: also try thresholds 0.70-0.90")
+    parser.add_argument(
+        "--settle", type=float, default=12.0, help="api mode: seconds to wait for background variations"
+    )
     parser.add_argument("--out", type=Path, default=OUT_PATH)
     args = parser.parse_args()
 
@@ -269,7 +315,7 @@ def main() -> None:
     else:
         if not args.api:
             parser.error("--mode api needs --api URL")
-        section = run_api(args.api, kit, load_set("unseen"), paraphrases, near_misses)
+        section = run_api(args.api, kit, load_set("unseen"), paraphrases, near_misses, settle_s=args.settle)
 
     section["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     section["verdicts"] = verdicts(section)

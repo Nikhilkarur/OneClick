@@ -65,8 +65,9 @@ def test_enforcing_an_unmeasured_gate_fails(tmp_path):
     )
 
 
-def test_live_against_skeleton_api(tmp_path, monkeypatch):
-    """The real api/app skeleton, in-process: health ok, every body schema-valid, no leaks."""
+def test_live_against_api_in_process(tmp_path, monkeypatch):
+    """The real api/app, in-process and rules-only (conftest blanks the keys): health ok, every body
+    schema-valid, no leaks. The engine answers now, so G4/G5 are checked instead of empty contexts."""
     pytest.importorskip("fastapi")
     from evalkit.paths import use_api_package
 
@@ -84,4 +85,4 @@ def test_live_against_skeleton_api(tmp_path, monkeypatch):
     assert code == 0
     assert report["hygiene"]["always_200"]["pass"] and report["hygiene"]["pure_json"]["pass"]
     assert report["latency"]["repeat"]["n"] == 20
-    assert any("empty contexts" in n for n in report["notes"])
+    assert report["gates"]["G4"]["pass"] and report["gates"]["G5"]["pass"]
