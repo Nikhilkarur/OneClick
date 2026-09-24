@@ -56,12 +56,65 @@ def test_guard_blocks_a_different_symptom_on_the_same_part():
     assert not compatible(black, cracked)
 
 
-def test_guard_treats_a_missing_slot_as_a_wildcard():
+def test_guard_treats_a_missing_query_slot_as_a_wildcard():
+    """A missing slot on the QUERY side matches anything; see the one-sided symptom test below."""
     black = Slots(component="screen", symptom="black")
     vague = Slots(component="screen", symptom=None)
-    assert compatible(black, vague)
+    assert compatible(vague, black)
     assert compatible(Slots(), black)
 
 
 def test_guard_blocks_a_different_component():
     assert not compatible(Slots(component="screen"), Slots(component="battery"))
+
+
+def test_an_app_name_does_not_outrank_the_faulty_part():
+    """Gmail is where the fault was noticed; the screen is what is faulty (7 of 200 paraphrases)."""
+    query = "opening an email in gmail makes the screen flash and go blank"
+    assert extract_slots(query).component == "screen"
+
+
+def test_a_genuine_app_problem_still_reads_as_app():
+    assert extract_slots("the gmail app crashes when i open it").component == "app"
+
+
+@pytest.mark.parametrize(
+    ("query", "intent"),
+    [
+        ("i want my screen to go black while smart switch runs", "configure"),
+        ("how do i set the screen timeout", "configure"),
+        ("is there a way to keep the screen on", "configure"),
+        ("my screen goes black while smart switch runs", "fault"),
+        # asking how to FIX is a fault report, not a configuration request
+        ("how do i fix my black screen", "fault"),
+        # "is fine" is how people describe the half that still works
+        ("one side is dark and the other side is fine", "fault"),
+        ("i dont want my screen to go black", "fault"),
+    ],
+)
+def test_intent_tells_a_wish_from_a_fault(query, intent):
+    assert extract_slots(query).intent == intent
+
+
+def test_a_query_symptom_the_entry_never_named_misses():
+    """One-sided: the query names a symptom and the cached entry has none."""
+    assert not compatible(Slots(component="screen", symptom="cracked"), Slots(component="screen"))
+    assert not compatible(Slots(component="screen", symptom="black"), Slots(component="screen"))
+
+
+def test_a_query_without_a_symptom_still_matches():
+    """The reverse stays a wildcard: terse paraphrases name no symptom (54% vs 82% hit rate)."""
+    assert compatible(Slots(component="screen"), Slots(component="screen", symptom="black"))
+
+
+def test_fault_and_configure_never_match():
+    fault = Slots(component="screen", symptom="black", intent="fault")
+    wish = Slots(component="screen", symptom="black", intent="configure")
+    assert not compatible(wish, fault)
+    assert not compatible(fault, wish)
+
+
+def test_an_entry_cached_before_intent_existed_is_a_wildcard():
+    assert compatible(
+        Slots(component="screen", symptom="black", intent="fault"), Slots(component="screen", symptom="black")
+    )

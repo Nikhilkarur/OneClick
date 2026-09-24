@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS cache_entries (
     siis_hash   TEXT,
     component   TEXT,
     symptom     TEXT,
+    intent      TEXT,
     plan        TEXT NOT NULL,
     query_texts TEXT NOT NULL,
     created_at  REAL NOT NULL,
@@ -31,7 +32,15 @@ _key_locks: dict[str, threading.Lock] = {}
 def _connect() -> sqlite3.Connection:
     connection = sqlite3.connect(settings.sqlite_path)
     connection.execute(_SCHEMA)
+    _migrate(connection)
     return connection
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Add columns a snapshot written by an older build lacks. Missing values load as None."""
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(cache_entries)")}
+    if "intent" not in columns:
+        connection.execute("ALTER TABLE cache_entries ADD COLUMN intent TEXT")
 
 
 def entries() -> dict[str, CacheEntry]:
@@ -44,18 +53,18 @@ def load() -> int:
     global _entries
     with _connect() as connection:
         rows = connection.execute(
-            "SELECT key, siis_hash, component, symptom, plan, query_texts, created_at, hits"
+            "SELECT key, siis_hash, component, symptom, intent, plan, query_texts, created_at, hits"
             " FROM cache_entries"
         ).fetchall()
     _entries = {
         row[0]: CacheEntry(
             key=row[0],
             siis_hash=row[1],
-            slots=Slots(component=row[2], symptom=row[3]),
-            plan=json.loads(row[4]),
-            query_texts=json.loads(row[5]),
-            created_at=row[6],
-            hits=row[7],
+            slots=Slots(component=row[2], symptom=row[3], intent=row[4]),
+            plan=json.loads(row[5]),
+            query_texts=json.loads(row[6]),
+            created_at=row[7],
+            hits=row[8],
         )
         for row in rows
     }
@@ -69,13 +78,14 @@ def put(entry: CacheEntry) -> None:
     with _connect() as connection:
         connection.execute(
             "INSERT OR REPLACE INTO cache_entries"
-            " (key, siis_hash, component, symptom, plan, query_texts, created_at, hits)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " (key, siis_hash, component, symptom, intent, plan, query_texts, created_at, hits)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 entry.key,
                 entry.siis_hash,
                 entry.slots.component,
                 entry.slots.symptom,
+                entry.slots.intent,
                 json.dumps(entry.plan),
                 json.dumps(entry.query_texts),
                 entry.created_at,

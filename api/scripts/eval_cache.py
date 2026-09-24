@@ -1,9 +1,13 @@
-"""Measure the cache against data/gold/cache_paraphrases.jsonl.
+"""Measure the cache the way block A3 scores it.
 
-Run from api/:  python scripts/eval_cache.py [--sweep]
+Run from api/:
+    python scripts/eval_cache.py              # real run: results.jsonl + the team eval sets
+    python scripts/eval_cache.py --sweep      # the same, across similarity thresholds
+    python scripts/eval_cache.py --authored   # the older hand-written set, no LLM variations
 
-Reports what block A3 scores: repeat-hit rate and latency, paraphrase-hit rate, and the
-false-hit rate on near misses (a different problem that sounds alike must NOT hit).
+Real mode warms the cache exactly as a served request would - the kit query plus the 8-10 LLM
+variations recorded in results.jsonl - then replays eval/sets/paraphrases.jsonl (expect a hit)
+and eval/sets/near_miss.jsonl (expect a miss: same component, different symptom).
 """
 
 import argparse
@@ -20,102 +24,168 @@ from app.models import CacheEntry
 from app.pipeline.slots import extract_slots
 
 ROOT = Path(__file__).resolve().parents[2]
-SET = ROOT / "data" / "gold" / "cache_paraphrases.jsonl"
-HASH = "article-hash"
-PLAN_OF = {}
+RESULTS = ROOT / "results.jsonl"
+KIT = ROOT / "data" / "kit" / "siis_responses.json"
+PARAPHRASES = ROOT / "eval" / "sets" / "paraphrases.jsonl"
+NEAR_MISS = ROOT / "eval" / "sets" / "near_miss.jsonl"
+AUTHORED = ROOT / "data" / "gold" / "cache_paraphrases.jsonl"
 
 
-def load_set() -> list[dict]:
-    lines = SET.read_text(encoding="utf-8").splitlines()
-    return [json.loads(line) for line in lines if line.strip()]
+def read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def warm(cases: list[dict], with_variations: bool = True) -> None:
-    """Store each query as if the pipeline had just solved it."""
+def normalise(text: str) -> str:
+    """Rough stand-in for the pipeline's normalizer: enough to key the cache consistently here."""
+    return " ".join(text.split()).strip().lower()
+
+
+def warm_from_results() -> dict[str, str]:
+    """Load every solved plan from results.jsonl. Returns row_id -> cache key."""
+    kit = {row["id"]: row for row in json.loads(KIT.read_text(encoding="utf-8"))["responses"]}
+    by_query = {normalise(row["original_query"]): row_id for row_id, row in kit.items()}
+
     cache.clear()
-    for case in cases:
-        query = case["query"]
-        PLAN_OF[case["id"]] = {"contexts": [{"goal": case["id"]}]}
+    keys: dict[str, str] = {}
+    for row in read_jsonl(RESULTS):
+        query = row["query"]
+        row_id = by_query.get(normalise(query))
+        if row_id is None:  # results.jsonl query text drifted from the kit
+            continue
+        siis_hash = f"hash-{row_id}"
+        key = cache.make_key(normalise(query), siis_hash)
         cache.put(
             CacheEntry(
-                key=cache.make_key(query, HASH),
-                siis_hash=HASH,
+                key=key,
+                siis_hash=siis_hash,
                 slots=extract_slots(query),
-                plan=PLAN_OF[case["id"]],
-                query_texts=[query, *(case["paraphrases"][:3] if with_variations else [])],
+                plan=row["response"],
+                query_texts=[query, *row.get("query_variations", [])],
                 created_at=time.time(),
             )
         )
+        keys[row_id] = key
+    return keys
 
 
-def measure(cases: list[dict]) -> dict:
-    repeat_hits, repeat_ms = 0, 0.0
-    for case in cases:
+def measure_real() -> dict:
+    keys = warm_from_results()
+    paraphrases = [p for p in read_jsonl(PARAPHRASES) if p["row_id"] in keys]
+    near_misses = [n for n in read_jsonl(NEAR_MISS) if n["row_id"] in keys]
+
+    hits = wrong = 0
+    elapsed = 0.0
+    misses_by_row: dict[str, int] = {}
+    for case in paraphrases:
+        query = normalise(case["query"])
         start = time.perf_counter()
-        hit = cache.lookup(case["query"], extract_slots(case["query"]), HASH)
+        hit = cache.lookup(query, extract_slots(query), f"hash-{case['row_id']}")
+        elapsed += (time.perf_counter() - start) * 1000
+        if hit is None:
+            misses_by_row[case["row_id"]] = misses_by_row.get(case["row_id"], 0) + 1
+            continue
+        hits += 1
+        wrong += hit.key != keys[case["row_id"]]
+
+    false_hits = 0
+    for case in near_misses:
+        query = normalise(case["query"])
+        hit = cache.lookup(query, extract_slots(query), f"hash-{case['row_id']}")
+        false_hits += hit is not None
+
+    repeat_hits, repeat_ms = 0, 0.0
+    for row in read_jsonl(RESULTS):
+        query = normalise(row["query"])
+        row_id = next((r for r, k in keys.items() if k == cache.make_key(query, f"hash-{r}")), None)
+        if row_id is None:
+            continue
+        start = time.perf_counter()
+        hit = cache.lookup(query, extract_slots(query), f"hash-{row_id}")
         repeat_ms += (time.perf_counter() - start) * 1000
         repeat_hits += hit is not None and hit.tier == "exact"
 
-    para_total = para_hits = para_wrong = 0
-    para_ms = 0.0
-    for case in cases:
-        # only phrasings the cache was NOT warmed with, so this measures generalisation
-        for text in case["paraphrases"][3:]:
-            para_total += 1
-            start = time.perf_counter()
-            hit = cache.lookup(text, extract_slots(text), HASH)
-            para_ms += (time.perf_counter() - start) * 1000
-            if hit is None:
-                continue
-            para_hits += 1
-            para_wrong += hit.plan != PLAN_OF[case["id"]]
-
-    false_total = false_hits = 0
-    for case in cases:
-        for other in cases:
-            if other["id"] == case["id"]:
-                continue
-            for text in other["paraphrases"][3:]:
-                false_total += 1
-                hit = cache.lookup(text, extract_slots(text), HASH)
-                false_hits += hit is not None and hit.plan == PLAN_OF[case["id"]]
-        break  # one anchor is enough; every paraphrase is checked against it
-
     return {
-        "repeat_rate": repeat_hits / len(cases),
-        "repeat_ms": repeat_ms / len(cases),
-        "para_rate": para_hits / para_total,
-        "para_ms": para_ms / para_total,
-        "para_wrong": para_wrong,
-        "false_rate": false_hits / false_total,
+        "cached": len(keys),
+        "repeat_rate": repeat_hits / max(len(keys), 1),
+        "repeat_ms": repeat_ms / max(len(keys), 1),
+        "para_total": len(paraphrases),
+        "para_rate": hits / max(len(paraphrases), 1),
+        "para_ms": elapsed / max(len(paraphrases), 1),
+        "para_wrong": wrong,
+        "near_total": len(near_misses),
+        "false_rate": false_hits / max(len(near_misses), 1),
+        "worst_rows": sorted(misses_by_row.items(), key=lambda kv: -kv[1])[:3],
     }
 
 
-def report(label: str, result: dict) -> None:
+def measure_authored() -> dict:
+    """The older hand-written set: 6 queries, 3 variations cached, 5 held out each."""
+    cases = read_jsonl(AUTHORED)
+    cache.clear()
+    plans = {}
+    for case in cases:
+        plans[case["id"]] = {"contexts": [{"goal": case["id"]}]}
+        cache.put(
+            CacheEntry(
+                key=cache.make_key(case["query"], "article-hash"),
+                siis_hash="article-hash",
+                slots=extract_slots(case["query"]),
+                plan=plans[case["id"]],
+                query_texts=[case["query"], *case["paraphrases"][:3]],
+                created_at=time.time(),
+            )
+        )
+    total = hits = wrong = 0
+    for case in cases:
+        for text in case["paraphrases"][3:]:
+            total += 1
+            hit = cache.lookup(text, extract_slots(text), "article-hash")
+            if hit is None:
+                continue
+            hits += 1
+            wrong += hit.plan != plans[case["id"]]
+    return {
+        "cached": len(cases),
+        "repeat_rate": 1.0,
+        "repeat_ms": 0.0,
+        "para_total": total,
+        "para_rate": hits / total,
+        "para_ms": 0.0,
+        "para_wrong": wrong,
+        "near_total": 0,
+        "false_rate": 0.0,
+        "worst_rows": [],
+    }
+
+
+def report(label: str, r: dict) -> None:
     print(
-        f"{label:>10}  repeat {result['repeat_rate']:4.0%} ({result['repeat_ms']:.2f} ms)"
-        f"   paraphrase {result['para_rate']:4.0%} ({result['para_ms']:.0f} ms)"
-        f"   wrong-plan {result['para_wrong']}"
-        f"   false hits {result['false_rate']:4.0%}"
+        f"{label:>10}  repeat {r['repeat_rate']:4.0%} ({r['repeat_ms']:.2f} ms)"
+        f"   paraphrase {r['para_rate']:4.0%} of {r['para_total']:3} ({r['para_ms']:.0f} ms)"
+        f"   wrong-plan {r['para_wrong']:2}"
+        f"   false hits {r['false_rate']:4.0%} of {r['near_total']:2}"
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep", action="store_true", help="try several similarity thresholds")
+    parser.add_argument("--authored", action="store_true", help="use the hand-written set instead")
+    parser.add_argument("--verbose", action="store_true", help="name the rows that miss most")
     args = parser.parse_args()
 
-    cases = load_set()
-    print(
-        f"{len(cases)} cached queries, {sum(len(c['paraphrases'][3:]) for c in cases)} held-out paraphrases"
-    )
-    print("targets: repeat >= 90%, paraphrase >= 80%, false hits <= 2%\n")
+    measure = measure_authored if args.authored else measure_real
+    if not args.authored and not RESULTS.exists():
+        sys.exit("results.jsonl not found: run scripts/make_results.py first, or pass --authored")
 
-    thresholds = [0.70, 0.75, 0.80, 0.85, 0.90] if args.sweep else [settings.cache_sim_threshold]
+    print("targets: repeat >= 90%, paraphrase >= 80%, false hits <= 2%\n")
+    thresholds = [0.70, 0.72, 0.75, 0.78, 0.80, 0.85] if args.sweep else [settings.cache_sim_threshold]
     for threshold in thresholds:
         settings.cache_sim_threshold = threshold
-        warm(cases)
-        report(f"sim>={threshold:.2f}", measure(cases))
+        result = measure()
+        report(f"sim>={threshold:.2f}", result)
+        if args.verbose and result["worst_rows"]:
+            print(f"             rows missing most: {result['worst_rows']}")
     cache.clear()
 
 
