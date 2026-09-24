@@ -5,10 +5,19 @@ import re
 
 from app.compiler.scrub import scrub
 
-_LEADING_NUMBER = re.compile(r"^\d+\.\s*")
+_LIST_NUMBER = re.compile(r"^\s*\d+[.)]\s*")
 _QUOTES = "\"'“”‘’ "
 _WHITESPACE = re.compile(r"\s+")
 _HASH_LENGTH = 16  # matches the siis_hash values in data/fixtures/*/cache_events.json
+
+
+def _unlist(query: str) -> str:
+    """Kit numbering and wrapping quotes removed from every line, lines joined into one text.
+
+    A kit query can be a numbered list of quoted complaints ('1. "..."\\n2. "..."').
+    """
+    lines = (_LIST_NUMBER.sub("", line).strip(_QUOTES) for line in (query or "").splitlines())
+    return _WHITESPACE.sub(" ", " ".join(line for line in lines if line)).strip()
 
 
 def normalize_query(query: str) -> str:
@@ -16,8 +25,13 @@ def normalize_query(query: str) -> str:
 
     Punctuation is kept: the exact tier should only match what really is the same question.
     """
-    text = _LEADING_NUMBER.sub("", (query or "").strip()).strip(_QUOTES)
-    return _WHITESPACE.sub(" ", text).strip().lower()
+    return _unlist(query).lower()
+
+
+def display_query(query: str) -> str:
+    """The complaint as the LLM and the cache index see it: as written, minus kit numbering, quotes,
+    links and email addresses (scrubbed before any LLM call, like the article)."""
+    return _WHITESPACE.sub(" ", scrub(_unlist(query))).strip()
 
 
 def siis_text(siis: dict | str | None) -> str:

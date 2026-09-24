@@ -22,7 +22,7 @@ from app.models import DraftAction, DraftStep, Intent, LinkDecision, LinkTier
 from app.pipeline.categorize import categorize
 from app.pipeline.ground import ground_with_report
 from app.pipeline.multi_intent import dedupe_with_report
-from app.pipeline.normalize import clean_siis, normalize_query
+from app.pipeline.normalize import clean_siis, display_query, normalize_query
 from app.pipeline.order import order
 from app.pipeline.run import run_with_variations
 from app.pipeline.segment import segment_with_sections, split_sections
@@ -75,6 +75,56 @@ def test_scrub_removes_every_kind_of_link_and_keeps_the_text():
         assert has_leak(text) and not has_leak(scrub(text))
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Visit samsung.co.in for help.", "Visit for help."),  # India and short-link endings
+        ("Scan t.co/abc123 for details.", "Scan for details."),
+        ("Open 192.168.1.1:8080 in a browser.", "Open in a browser."),
+        ("Visit samsung\u200b.com today.", "Visit today."),  # zero-width space hiding a domain
+        ("ｈｔｔｐｓ：／／samsung．com", ""),  # full-width characters (NFKC)
+        ("Go to &lt;a href=&quot;https://x.com&quot;&gt;here&lt;/a&gt;.", "Go to here."),  # HTML entities
+        ("Mail kids.pin+x@mail.samsung.co.kr now.", "Mail now."),  # no ".kr" left behind
+        ("Contact mailto:help@samsung.com please.", "Contact please."),
+        ("[guide][1]\n\n[1]: https://samsung.com/guide", "guide"),  # markdown reference link
+    ],
+)
+def test_scrub_catches_disguised_and_regional_links(text, expected):
+    assert scrub(text) == expected
+    assert has_leak(text) and not has_leak(scrub(text))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Step 1.In Settings, tap Display.",
+        "Check the app.In the list, tap Storage.",  # glued kit text: capitalised ".In" is not a domain
+        "Android 14.0 or One UI 6.1 is required.",
+        "Your file is saved as report.pdf in My Files.",
+        "It works on Galaxy S22/S23 models.",
+        "Call 1-800-726-7864.",
+    ],
+)
+def test_scrub_keeps_ordinary_text(text):
+    assert scrub(text) == text and not has_leak(text)
+
+
+def test_scrub_is_linear_on_hostile_input():
+    """Every pattern is length-bounded: a 50k-character payload must not stall a worker."""
+    import time
+
+    for payload in ("a." * 25_000, "a" * 50_000, "a@" * 25_000, "[" * 50_000):
+        started = time.perf_counter()
+        scrub(payload)
+        assert time.perf_counter() - started < 1.0, payload[:10]
+
+
+def test_the_complaint_is_scrubbed_before_any_llm_sees_it():
+    query = '1. "My email john.doe@gmail.com won\'t sync"\n2. "I followed https://bit.ly/fix"'
+    assert display_query(query) == "My email won't sync I followed"
+    assert normalize_query(query) == "my email john.doe@gmail.com won't sync i followed https://bit.ly/fix"
+
+
 def test_kit_articles_are_clean_after_normalize_and_keep_their_words():
     for row in KIT:
         clean, digest = clean_siis(row["siis_response"])
@@ -90,6 +140,7 @@ def test_normalize_matches_the_fixture_cache_keys(name):
     assert normalize_query(req["query"]) == miss["norm_query"]
     assert clean_siis(req["siis_response"])[1] == miss["siis_hash"]
     assert normalize_query('1. "My Screen  is BLACK"') == "my screen is black"
+    assert normalize_query('1. "Screen is cracked."\n2. "Touch fails."') == "screen is cracked. touch fails."
     assert clean_siis(None) == ("", None)
 
 

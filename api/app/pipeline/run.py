@@ -10,7 +10,6 @@ stream can never disagree. Every stage degrades instead of raising (hard rule 4)
     no SIIS           -> no-SIIS lookup table, else empty with fallback "no_siis_context"
 """
 
-import re
 import time
 from collections.abc import Iterator
 from concurrent.futures import wait
@@ -40,7 +39,7 @@ from app.pipeline.enrich import enrich_rules, enrich_with_report, finish_variati
 from app.pipeline.extract import extract_rules, extract_with_topics
 from app.pipeline.ground import ground_with_report
 from app.pipeline.multi_intent import dedupe_with_report
-from app.pipeline.normalize import clean_siis, normalize_query, siis_title
+from app.pipeline.normalize import clean_siis, display_query, normalize_query, siis_title
 from app.pipeline.order import order
 from app.pipeline.segment import segment_with_sections
 from app.pipeline.slots import extract_slots
@@ -415,10 +414,14 @@ def _cold(
             )
 
         try:
-            cache.put(entry([query_text, *variations]))
             if future is not None and not future.done():
-                # The variations land after the answer: index them for paraphrase hits when they do.
+                # The LLM variations land after the answer. Until then only the query itself is indexed:
+                # the template stand-ins are generic ("Why is my screen black?") and would stay in the
+                # index next to the real variations, widening what a near miss can match.
+                cache.put(entry([query_text]))
                 future.add_done_callback(lambda f: _late_variations(f, query_text, slots, entry))
+            else:
+                cache.put(entry([query_text, *variations]))
         except Exception:  # noqa: BLE001 - a failed cache write only costs the next request time
             run.degraded.append("cache_write")
     run.variations = variations
@@ -465,7 +468,7 @@ def _run_stream(
     t = time.perf_counter()
     readiness.ensure()  # scripts and tests may call the pipeline without the API's startup warm-up
     norm_query = normalize_query(query)
-    query_text = _display_query(query) or norm_query
+    query_text = display_query(query)  # scrubbed: links and addresses never reach an LLM
     siis_clean, siis_hash = clean_siis(siis)
     try:
         slots = extract_slots(norm_query)
@@ -520,12 +523,6 @@ def _lookup(norm_query: str, slots: Slots, siis_hash: str | None):
         return cache.lookup(norm_query, slots, siis_hash)
     except Exception:  # noqa: BLE001 - a broken cache means a cold run, not an error
         return None
-
-
-def _display_query(query: str) -> str:
-    """The complaint as the user wrote it, minus kit numbering and wrapping quotes."""
-    text = re.sub(r"^\s*\d+\.\s*", "", query or "").strip().strip("\"'“”‘’ ")
-    return " ".join(text.split())
 
 
 def run(query: str, siis: dict | str | None) -> dict:
