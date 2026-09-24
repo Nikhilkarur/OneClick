@@ -13,15 +13,48 @@ import { LLM_STAGES, type StageEvent } from "@/lib/trace";
  * Try it live: the one part of the page that is not a recording.
  *
  * It streams POST /v1/troubleshoot/stream and renders every stage frame as it arrives, then puts
- * the real answer on the phone. While the engine is still a skeleton the API serves its mock
- * replay, and every frame then carries `detail.mock` — the section says so on screen rather than
- * passing a replay off as a live run.
+ * the real answer on the phone. The badge names the model that answered (`meta.model`: a Ministral
+ * model, or `rules` when the engine ran without an LLM) or the cache tier that did. If the API is
+ * switched to its mock replay (`settings.stream_mock`), every frame carries `detail.mock` and the
+ * section says so rather than passing a replay off as a live run.
  */
 
 type Frame = StageEvent<Record<string, unknown>>;
 type Status = "idle" | "running" | "done" | "offline";
 
 const fmt = (ms: number) => (ms >= 100 ? Math.round(ms).toLocaleString("en-US") : ms.toFixed(1));
+
+const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+/** The one line under a stage worth reading live: what the cache matched, how the model worked. */
+function stageNote(f: Frame): string | null {
+  const d = f.detail ?? {};
+  if (f.stage === "cache" && d.hit === true) {
+    const matched = str(d.matched_query);
+    const sim = num(d.similarity);
+    const thr = num(d.threshold);
+    if (d.tier === "exact" || !matched) return matched ? `same request as “${matched}”` : null;
+    return `matched “${matched}”` + (sim !== null && thr !== null ? ` · similarity ${sim.toFixed(2)} ≥ ${thr.toFixed(2)}` : "");
+  }
+  if (f.stage === "enrich" && d.variations_pending === true) {
+    return "8–10 rewordings are being written in the background; the answer does not wait for them";
+  }
+  if (f.stage === "extract") {
+    const model = str(d.model);
+    const intents = Array.isArray(d.intents)
+      ? d.intents.map((i) => str((i as { title?: unknown })?.title)).filter(Boolean)
+      : [];
+    const parts = [
+      d.mode === "select" ? "picked article sentences by id, wrote none" : null,
+      model,
+      intents.length ? `${intents.length === 1 ? "problem" : "problems"}: ${intents.join(" · ")}` : null,
+      d.source === "rules" ? "no model answered: the article's own instructions" : null,
+    ];
+    return parts.filter(Boolean).join(" · ") || null;
+  }
+  return null;
+}
 
 export function Live({ data }: { data: StoryData }) {
   const root = useRef<HTMLElement>(null);
@@ -77,7 +110,14 @@ export function Live({ data }: { data: StoryData }) {
   const done = frames.find((f) => f.stage === "done");
   const mock = frames.some((f) => f.detail?.mock === true);
   const contexts = (done?.detail?.contexts as PlanContext[] | undefined) ?? [];
-  const meta = (done?.detail?.meta as { fallback?: string | null; trace_id?: string; latency_ms?: number }) ?? {};
+  const meta =
+    (done?.detail?.meta as {
+      fallback?: string | null;
+      trace_id?: string;
+      latency_ms?: number;
+      model?: string | null;
+      cache_tier?: string | null;
+    }) ?? {};
   const noScenario = mock && meta.trace_id === "t_mock_none";
   const stages = frames.filter((f) => f.stage !== "done");
 
@@ -85,9 +125,9 @@ export function Live({ data }: { data: StoryData }) {
     status === "offline"
       ? { cls: "off", text: "Engine offline" }
       : mock
-        ? { cls: "mock", text: "Mock replay · the engine is not live yet" }
+        ? { cls: "mock", text: "Mock replay of a recorded run" }
         : status === "done"
-          ? { cls: "live", text: "Live engine" }
+          ? { cls: "live", text: `Live engine · ${answeredBy(meta)}` }
           : { cls: "idle", text: API_URL.replace(/^https?:\/\//, "") };
 
   return (
@@ -140,15 +180,17 @@ export function Live({ data }: { data: StoryData }) {
             <ol className="lv-stages">
               {stages.map((f, i) => {
                 const hit = f.stage === "cache" && f.detail?.hit === true;
+                const note = stageNote(f);
                 return (
                   <li
                     key={`${f.stage}-${i}`}
-                    className={`lv-stage${LLM_STAGES.has(f.stage) ? " is-llm" : ""}${hit ? " hit" : ""}`}
+                    className={`lv-stage${usedModel(f) ? " is-llm" : ""}${hit ? " hit" : ""}`}
                   >
                     <span className="lv-dot" />
                     <b>{f.stage}</b>
                     <span className="lv-sum">{f.summary}</span>
                     <small>{fmt(f.ms)} ms</small>
+                    {note && <span className="lv-sub">{note}</span>}
                   </li>
                 );
               })}
@@ -175,6 +217,16 @@ export function Live({ data }: { data: StoryData }) {
       </p>
     </section>
   );
+}
+
+/** Pink only when a model really ran: on the free tier enrich is rules-only on the answer's path. */
+const usedModel = (f: Frame) => LLM_STAGES.has(f.stage) && Boolean(str(f.detail?.model));
+
+/** Who produced the answer: the cache tier on a hit, else the model (or the no-LLM rules path). */
+function answeredBy(meta: { model?: string | null; cache_tier?: string | null }): string {
+  if (meta.cache_tier) return `${meta.cache_tier} cache hit, no model call`;
+  if (!meta.model) return "answered";
+  return meta.model === "rules" ? "rules only, no model" : meta.model;
 }
 
 function LiveScreen({

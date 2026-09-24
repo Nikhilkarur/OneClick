@@ -251,11 +251,12 @@ export function Compile({ data }: { data: StoryData }) {
             </p>
           </article>
           <article className="cp-card cp-card-lime">
-            <span className="cp-big">3 s</span>
-            <h3>Two models, one timeout</h3>
+            <span className="cp-big">6 s</span>
+            <h3>Two models, one race</h3>
             <p>
-              Every call goes through one router: Gemini first at temperature 0, and Mistral answers if Gemini has
-              not within three seconds.
+              Open-weight Ministral 14B and 8B read the same prompt at once, and the 14B answer wins if it is back
+              within six seconds. Gemini is the last fallback; with every model down, the article&apos;s own
+              instructions still answer.
             </p>
           </article>
           <article className="cp-card cp-card-blue">
