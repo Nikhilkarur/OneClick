@@ -81,6 +81,8 @@ python eval/report.py                   # rewrites docs/metrics.md in the Append
 
 For honest cold numbers, start the API on an empty cache: `ONECLICK_SQLITE=/tmp/cold.sqlite uvicorn app.main:app` from `api/`, with the LLM keys in `.env`. The API mode waits `--settle` seconds (default 12) after the cold pass, because each answer's 8–10 variations are generated in the background and paraphrase hits depend on them.
 
+In the API mode's near-miss pass, the engine caches every answer it computes, so a near miss that misses runs cold and a later near miss on the same article can hit *that* answer. Each hit is therefore classified by the plan it served, compared with the plans from earlier in the run: a kit answer (the row's own, or another row's with the same article), an earlier near miss's answer, or a paraphrase's cold answer. Only kit answers count toward the ≤ 2% false-hit target; the others are reported in `near_miss.hits_by_source` and `leaked`. The in-process `--mode cache` pass never stores near misses, so it needs no such split.
+
 **`ablation.py`** maps every gold step with each variant and scores them the same way:
 
 | Row | Variant | What it is |

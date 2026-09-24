@@ -97,5 +97,56 @@ def test_api_mode_lists_leaked_near_misses(monkeypatch):
         {"id": "nm_2", "row_id": "r1", "query": "fine", "differs_in": "symptom"},
     ]
     nm = loadtest.run_api("http://x", kit, [], [], near)["near_miss"]
-    assert nm["leaked"] == [{"id": "nm_1", "query": "leak", "differs_in": "intent", "tier": "semantic"}]
-    assert nm["false_hit_rate"] == 0.5
+    assert nm["leaked"] == [
+        {"id": "nm_1", "query": "leak", "differs_in": "intent", "tier": "semantic", "source": "unidentified"}
+    ]
+    assert nm["any_hit_rate"] == 0.5
+    assert nm["false_hits"] == 0 and nm["false_hit_rate"] == 0.0  # not a kit answer
+
+
+def _res(plan, hit):
+    from evalkit.client import CallResult
+
+    return CallResult(
+        200, 1.0, cache_hit=hit, body={"contexts": plan} if plan else {"contexts": []}, pure_json=True
+    )
+
+
+def test_near_miss_hits_are_classified_by_the_plan_they_served():
+    from evalkit.sets import KitRow
+
+    kit = [KitRow("r1", "q1", {"content": "a"}), KitRow("r2", "q2", {"content": "a"})]
+    plan_r1, plan_r2 = [{"title": "one"}], [{"title": "two"}]
+    kit_cold = [_res(plan_r1, False), _res(plan_r2, False)]
+    para = [("r1", _res([{"title": "para"}], False))]
+    near_misses = [
+        {"id": "a", "row_id": "r1", "query": "x", "differs_in": "intent"},  # own kit answer
+        {"id": "b", "row_id": "r1", "query": "y", "differs_in": "symptom"},  # misses, runs cold, is cached
+        {"id": "c", "row_id": "r2", "query": "z", "differs_in": "symptom"},  # hits b's answer
+        {"id": "d", "row_id": "r2", "query": "w", "differs_in": "component"},  # r1's kit answer
+        {"id": "e", "row_id": "r1", "query": "v", "differs_in": "intent"},  # a paraphrase's cold answer
+        {"id": "f", "row_id": "r1", "query": "u", "differs_in": "intent"},  # hit with an empty plan
+    ]
+    near = [
+        _res(plan_r1, True),
+        _res([{"title": "b"}], False),
+        _res([{"title": "b"}], True),
+        _res(plan_r1, True),
+        _res([{"title": "para"}], True),
+        _res([], True),
+    ]
+    leaked, by = loadtest.classify_near_misses(near_misses, near, kit, kit_cold, para)
+    assert [x["source"] for x in leaked] == [
+        "own_kit_answer",
+        "earlier_near_miss",
+        "other_kit_answer",
+        "paraphrase_answer",
+        "unidentified",
+    ]
+    assert by == {
+        "own_kit_answer": 1,
+        "earlier_near_miss": 1,
+        "other_kit_answer": 1,
+        "paraphrase_answer": 1,
+        "unidentified": 1,
+    }

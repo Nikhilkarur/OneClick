@@ -296,8 +296,9 @@ def section4(load: dict | None) -> list[str]:
     if para:
         out.append(
             f"_Hit rate over {para['n']} held-out paraphrases (`eval/sets/paraphrases.jsonl`, never used to warm "
-            f"the cache), {para.get('wrong_plan', 0)} served the wrong plan. "
-            f"{src.get('warmed_with', '')}._"
+            f"the cache), {para.get('wrong_plan', 0)} served the wrong plan."
+            + (f" {src['warmed_with']}." if src.get("warmed_with") else "")
+            + "_"
         )
     nm = src.get("near_miss")
     if nm:
@@ -305,6 +306,17 @@ def section4(load: dict | None) -> list[str]:
             f"_False hits on {nm['n']} near misses (same article, different problem): {pct(nm.get('false_hit_rate'))} "
             "(target <= 2%)._"
         )
+        by = nm.get("hits_by_source")
+        if by:
+            other = {k: v for k, v in by.items() if k not in ("own_kit_answer", "other_kit_answer")}
+            out.append(
+                f"_Counted as false hits: near misses served a kit answer ({by.get('own_kit_answer', 0)} their own "
+                f"row's, {by.get('other_kit_answer', 0)} another row's with the same article). The live pass also "
+                "caches every answer it computes, so a near miss can hit an answer created earlier in the same "
+                "test; those are reported, not counted: "
+                + (", ".join(f"{k.replace('_', ' ')} {v}" for k, v in other.items()) or "none")
+                + "._"
+            )
     return [*out, ""]
 
 
