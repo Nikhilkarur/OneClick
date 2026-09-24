@@ -43,10 +43,12 @@ def lookup(norm_query: str, slots: Slots, siis_hash: str | None) -> CacheHit | N
     if plan is not None:
         return CacheHit(plan, tier="exact", key=key, similarity=1.0)
 
-    plan = semantic.lookup(norm_query, slots, siis_hash)
-    if plan is not None:
-        matched_key, similarity = semantic.best_match(norm_query)
-        return CacheHit(plan, tier="semantic", key=matched_key or key, similarity=round(similarity, 3))
+    # The tier-1 lookup reports the entry it served and that entry's score: best_match() would
+    # embed the query a second time and could name a phrasing the guards rejected.
+    found = semantic.lookup_with_score(norm_query, slots, siis_hash)
+    if found is not None:
+        plan, matched_key, similarity = found
+        return CacheHit(plan, tier="semantic", key=matched_key, similarity=round(similarity, 3))
     return None
 
 

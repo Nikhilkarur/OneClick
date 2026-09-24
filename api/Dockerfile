@@ -16,7 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5')"
 
 COPY api/ /app/
+# The engine reads these at runtime: the catalog, the slot lexicon (cache guard) and the
+# dependency edges (action ordering). Without them the service starts but degrades silently.
 COPY data/kit/ /data/kit/
+COPY data/slot_lexicon.json data/dependencies.json data/appliance_exclusions.json /data/
 
 # Screen Graph + catalog vectors, so /health goes green in well under a second (ADR-007).
 RUN python scripts/build_screengraph.py && python scripts/build_index.py
@@ -25,4 +28,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# One worker on purpose: each worker would hold its own in-memory cache and vector index, so a
+# repeat query could land on the other one and miss. The request path waits on LLM calls, which
+# release the GIL, so a second worker buys little.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

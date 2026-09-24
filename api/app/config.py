@@ -75,10 +75,14 @@ class Settings(BaseModel):
     # ------------------------------------------------------------------------------------------------
 
     # Cache (ADR-004)
-    # 0.80 measured on data/gold/cache_paraphrases.jsonl (scripts/eval_cache.py --sweep):
-    # 0.85 hit only 63% of held-out paraphrases (A3 needs >= 80%), and below 0.80 a paraphrase
-    # starts matching the wrong cached plan. 0.80 gave 90% with zero wrong plans or false hits.
-    cache_sim_threshold: float = 0.80
+    # Symptoms that never match a query without one: they change the plan entirely.
+    guard_strict_symptoms: list[str] = ["cracked", "overheating", "blurry", "no_sound"]
+    # Re-measured 2026-09-24 against the real cache (results.jsonl variations) with
+    # eval/sets/paraphrases.jsonl (200) and near_miss.jsonl (60): scripts/eval_cache.py --sweep.
+    # Paraphrase hit rate by threshold: 0.72 -> 83%, 0.75 -> 80%, 0.80 -> 78%, 0.85 -> 68%, and
+    # A3 needs >= 80%. False hits sit at 2% whatever the threshold once the slot and intent guards
+    # are on, so the threshold buys hit rate and the guards buy safety.
+    cache_sim_threshold: float = 0.72
     sqlite_path: str = os.getenv("ONECLICK_SQLITE", "cache.sqlite")
 
     # Where data/kit and data/build live. Set ONECLICK_DATA in the container.

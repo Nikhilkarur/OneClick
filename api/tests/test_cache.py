@@ -105,3 +105,45 @@ def test_a_prompt_change_invalidates_old_keys(monkeypatch):
     _store(BLACK_SCREEN, BLACK_VARIATIONS)
     monkeypatch.setattr(settings, "prompt_version", "v2")
     assert cache.make_key(BLACK_SCREEN, HASH) not in [e.key for e in cache.store.entries().values()]
+
+
+def test_a_configuration_request_is_not_served_the_fault_plan():
+    """eval/sets/near_miss.jsonl 'intent' cases: same words, but the user wants the behaviour."""
+    _store(BLACK_SCREEN, BLACK_VARIATIONS)
+    wish = "i want my galaxy s24 screen to stay completely black while the phone is on"
+    assert cache.lookup(wish, extract_slots(wish), HASH) is None
+
+
+def test_a_semantic_hit_reports_the_entry_it_served():
+    entry = _store(BLACK_SCREEN, BLACK_VARIATIONS)
+    hit = cache.lookup(BLACK_VARIATIONS[0], extract_slots(BLACK_VARIATIONS[0]), HASH)
+    assert hit is not None and hit.key == entry.key and 0 < hit.similarity <= 1
+
+
+def test_indexing_while_looking_up_is_safe():
+    """The engine writes variations from a background thread while requests read the index."""
+    import threading
+
+    _store(BLACK_SCREEN, BLACK_VARIATIONS)
+    errors: list[Exception] = []
+
+    def writer():
+        try:
+            for index in range(15):
+                _store(f"battery drains fast on phone number {index}", [f"battery dies {index}"])
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def reader():
+        try:
+            for _ in range(30):
+                cache.lookup(BLACK_VARIATIONS[1], extract_slots(BLACK_VARIATIONS[1]), HASH)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert not errors

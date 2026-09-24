@@ -1,5 +1,5 @@
 {
-  "_readme": "Deterministic slots for the cache guard. Add synonyms freely; keep values lowercase. Longest matching phrase wins, so multi-word entries beat single words. Components answer 'which part', symptoms answer 'what is wrong' - two filled symptoms that differ block a semantic cache hit (black vs cracked).",
+  "_readme": "Deterministic slots for the cache guard. Add synonyms freely; keep values lowercase. Longest matching phrase wins, earliest mention breaks a tie, and a phrase denied by 'no' or 'not' is ignored. Components in _weak_components only win when nothing else matches: an app name is usually where the problem was noticed, not the faulty part ('opening Gmail makes the SCREEN flash').",
   "component": {
     "screen": [
       "screen",
@@ -185,5 +185,8 @@
       "can't hear",
       "silent"
     ]
-  }
+  },
+  "_weak_components": [
+    "app"
+  ]
 }
