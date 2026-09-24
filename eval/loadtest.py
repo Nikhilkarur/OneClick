@@ -163,6 +163,63 @@ def run_cache(
 # ------------------------------------------------------------------------------------------------ api
 
 
+def _plan_key(result) -> str | None:
+    """The served plan as a comparable string; None for an empty plan, which matches nothing."""
+    return json.dumps(result.contexts, sort_keys=True) if result.contexts else None
+
+
+def classify_near_misses(
+    near_misses: list[dict],
+    near: list,
+    kit_rows: list[KitRow],
+    kit_cold: list,
+    para: list[tuple[str, object]],
+) -> tuple[list[dict], dict]:
+    """Where each near-miss cache hit's plan came from, found by comparing the plan it served.
+
+    The live pass stores every answer it computes, so a near miss that misses runs cold and is
+    cached, and a later near miss on the same article can hit it. Only a hit on a kit answer is the
+    false hit the <= 2% target is about (a different problem getting a plan solved for the kit
+    query). Hits on answers created during the test are reported separately. The served plan is
+    compared rather than `matched_query`, which names the closest phrasing before the slot guards
+    and so can differ from the entry actually served.
+    """
+    kit_plan = {row.row_id: _plan_key(r) for row, r in zip(kit_rows, kit_cold, strict=False)}
+    kit_owner = {}
+    for row_id, key in kit_plan.items():
+        if key is not None:
+            kit_owner.setdefault(key, row_id)
+    para_plans = {_plan_key(r) for _, r in para if not r.cache_hit and _plan_key(r)}
+    earlier: set[str] = set()
+    leaked, counts = [], Counter()
+    for m, r in zip(near_misses, near, strict=True):
+        key = _plan_key(r)
+        if r.cache_hit:
+            if key is not None and key == kit_plan.get(m["row_id"]):
+                source = "own_kit_answer"
+            elif key is not None and key in kit_owner:
+                source = "other_kit_answer"
+            elif key is not None and key in earlier:
+                source = "earlier_near_miss"
+            elif key is not None and key in para_plans:
+                source = "paraphrase_answer"
+            else:
+                source = "unidentified"
+            counts[source] += 1
+            leaked.append(
+                {
+                    "id": m.get("id"),
+                    "query": m["query"],
+                    "differs_in": m.get("differs_in"),
+                    "tier": r.cache_tier,
+                    "source": source,
+                }
+            )
+        if key is not None:
+            earlier.add(key)
+    return leaked, dict(counts)
+
+
 def _meta(result) -> dict:
     meta = result.body.get("meta") if isinstance(result.body, dict) else None
     return meta if isinstance(meta, dict) else {}
@@ -229,18 +286,29 @@ def run_api(
     repeat = [client.troubleshoot(row.query, row.siis) for _ in range(2) for row in kit]
     para = [client.troubleshoot(p["query"], siis[p["row_id"]]) for p in paraphrases]
     near = [client.troubleshoot(m["query"], siis[m["row_id"]]) for m in near_misses]
-    leaked = [
-        {"id": m.get("id"), "query": m["query"], "differs_in": m.get("differs_in"), "tier": r.cache_tier}
-        for m, r in zip(near_misses, near, strict=True)
-        if r.cache_hit
-    ]
     client.close()
+    leaked, by_source = classify_near_misses(
+        near_misses,
+        near,
+        kit,
+        cold[: len(kit)],
+        [(p["row_id"], r) for p, r in zip(paraphrases, para, strict=True)],
+    )
+    near_section = timed(near, False)
+    kit_hits = by_source.get("own_kit_answer", 0) + by_source.get("other_kit_answer", 0)
+    near_section.update(
+        any_hit_rate=near_section["hit_rate"],
+        false_hits=kit_hits,
+        false_hit_rate=rate(kit_hits, len(near)),
+        hits_by_source=by_source,
+        leaked=leaked,
+    )
     return {
         "source": f"HTTP against {base_url}",
         "cold": timed(cold, None),
         "repeat": timed(repeat, True),
         "paraphrase": timed(para, True),
-        "near_miss": {**timed(near, False), "leaked": leaked},
+        "near_miss": near_section,
         "notes": notes,
     }
 
@@ -274,6 +342,11 @@ def print_section(name: str, section: dict) -> None:
         if path == "cold" and s.get("models"):
             print(f"  cold answers by model: {s['models']}")
     nm = section.get("near_miss") or {}
+    if "hits_by_source" in nm:
+        print(
+            f"  near-miss false hits (served a kit answer): {nm['false_hits']}/{nm['n']} "
+            f"= {nm['false_hit_rate']:.1%}; all hits by source: {nm['hits_by_source']}"
+        )
     if "above_threshold_without_guard" in nm:
         print(
             f"  slot guard: {nm['above_threshold_without_guard']}/{nm['n']} near misses cleared the similarity "

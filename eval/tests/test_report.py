@@ -170,3 +170,17 @@ def test_api_cold_cost_and_models(tmp_path):
     assert "| $0.0000 |" in row(md, "Cold query average inference cost")
     assert "**Model(s):** ministral-14b-latest (30 cold queries), rules (5 cold queries)" in md
     assert "| 6400.0 |" in row(md, "Cold query - full pipeline")
+
+
+def test_api_near_miss_sources_are_explained(tmp_path):
+    nm = {
+        "n": 60,
+        "hits": 32,
+        "hit_rate": 0.533,
+        "false_hit_rate": 0.3,
+        "hits_by_source": {"own_kit_answer": 16, "other_kit_answer": 2, "earlier_near_miss": 14},
+    }
+    md = render(tmp_path, loadtest={"api": {"source": "HTTP", "near_miss": nm}})
+    assert "30.0% (target <= 2%)" in md
+    assert "16 their own row's, 2 another row's" in md
+    assert "earlier near miss 14" in md
