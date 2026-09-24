@@ -147,3 +147,39 @@ def test_indexing_while_looking_up_is_safe():
     for thread in threads:
         thread.join()
     assert not errors
+
+
+def test_reputting_an_entry_does_not_index_its_texts_twice():
+    """The engine puts an entry with the query, then again when variations land."""
+    from app.cache import semantic
+
+    entry = _store(BLACK_SCREEN, [])
+    rows_before = len(semantic._keys)
+    entry.query_texts = [BLACK_SCREEN, *BLACK_VARIATIONS]
+    cache.put(entry)
+    assert len(semantic._keys) == rows_before + len(BLACK_VARIATIONS)
+
+
+def test_intent_survives_a_restart():
+    _store(BLACK_SCREEN, BLACK_VARIATIONS)
+    cache.init()
+    stored = next(iter(cache.store.entries().values()))
+    assert stored.slots.intent == "fault"
+
+
+def test_an_old_snapshot_without_the_intent_column_still_loads(tmp_path, monkeypatch):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE cache_entries (key TEXT PRIMARY KEY, siis_hash TEXT, component TEXT,"
+            " symptom TEXT, plan TEXT NOT NULL, query_texts TEXT NOT NULL, created_at REAL NOT NULL,"
+            " hits INTEGER NOT NULL DEFAULT 0)"
+        )
+        connection.execute(
+            "INSERT INTO cache_entries VALUES ('k1', 'h', 'screen', 'black', '{}', '[\"q\"]', 1.0, 0)"
+        )
+    monkeypatch.setattr(settings, "sqlite_path", str(path))
+    assert cache.init() == 1
+    assert cache.store.entries()["k1"].slots.intent is None

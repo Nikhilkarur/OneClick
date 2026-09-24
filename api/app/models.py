@@ -15,6 +15,9 @@ class Slots(BaseModel):
 
     component: str | None = None
     symptom: str | None = None
+    # fault | configure. "I want my screen to go black" shares component and symptom with the fault
+    # it resembles; only this separates them. None (entries cached before this field) is a wildcard.
+    intent: str | None = None
 
 
 class Intent(BaseModel):

@@ -1,5 +1,5 @@
 {
-  "_readme": "Deterministic slots for the cache guard. Add synonyms freely; keep values lowercase. Longest matching phrase wins, earliest mention breaks a tie, and a phrase denied by 'no' or 'not' is ignored. Components in _weak_components only win when nothing else matches: an app name is usually where the problem was noticed, not the faulty part ('opening Gmail makes the SCREEN flash').",
+  "_readme": "Deterministic slots for the cache guard. Add synonyms freely; keep values lowercase. Longest matching phrase wins, earliest mention breaks a tie, and a phrase denied by 'no' or 'not' is ignored. Components in _weak_components only win when nothing else matches: an app name is usually where the problem was noticed, not the faulty part ('opening Gmail makes the SCREEN flash'). intent is 'configure' when a configure phrase appears and 'fault' otherwise, so 'how do I fix...' stays a fault.",
   "component": {
     "screen": [
       "screen",
@@ -188,5 +188,22 @@
   },
   "_weak_components": [
     "app"
-  ]
+  ],
+  "intent": {
+    "configure": [
+      "i want",
+      "i'd like",
+      "id like",
+      "i would like",
+      "is there a way to",
+      "how do i make",
+      "how do i set",
+      "how do i keep",
+      "how do i turn",
+      "how can i make",
+      "how can i set",
+      "how can i keep",
+      "how can i turn"
+    ]
+  }
 }

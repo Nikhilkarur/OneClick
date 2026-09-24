@@ -75,14 +75,11 @@ class Settings(BaseModel):
     # ------------------------------------------------------------------------------------------------
 
     # Cache (ADR-004)
-    # Symptoms that never match a query without one: they change the plan entirely.
-    guard_strict_symptoms: list[str] = ["cracked", "overheating", "blurry", "no_sound"]
-    # Re-measured 2026-09-24 against the real cache (results.jsonl variations) with
-    # eval/sets/paraphrases.jsonl (200) and near_miss.jsonl (60): scripts/eval_cache.py --sweep.
-    # Paraphrase hit rate by threshold: 0.72 -> 83%, 0.75 -> 80%, 0.80 -> 78%, 0.85 -> 68%, and
-    # A3 needs >= 80%. False hits sit at 2% whatever the threshold once the slot and intent guards
-    # are on, so the threshold buys hit rate and the guards buy safety.
-    cache_sim_threshold: float = 0.72
+    # 0.75, decided 2026-09-24 with the intent slot and the one-sided symptom rule (slot_guard.py),
+    # measured on the real cache (results.jsonl variations) against eval/sets/paraphrases.jsonl
+    # (200) and near_miss.jsonl (60): scripts/eval_cache.py --sweep. The guards hold false hits
+    # at or under 2%; the threshold trades paraphrase hits (A3 needs >= 80%) against margin.
+    cache_sim_threshold: float = 0.75
     sqlite_path: str = os.getenv("ONECLICK_SQLITE", "cache.sqlite")
 
     # Where data/kit and data/build live. Set ONECLICK_DATA in the container.

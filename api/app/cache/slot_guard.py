@@ -1,21 +1,25 @@
 """Rejects semantic hits whose lexicon slots contradict the query (black vs cracked)."""
 
-from app.config import settings
 from app.models import Slots
 
 
-def compatible(a: Slots, b: Slots) -> bool:
-    """True when nothing in the two slot sets contradicts.
+def compatible(query: Slots, cached: Slots) -> bool:
+    """True when the cached entry's slots do not contradict the incoming query's.
 
-    A missing slot is a wildcard: "display won't turn on" finds no symptom word, so it may still
-    match a cached "screen is black". Two *filled* slots that differ block the hit, which is what
-    keeps "screen is black" from answering "screen is cracked" - embeddings rate those 0.9 alike.
+    Order matters: the first argument is the incoming query, the second the cached entry.
+
+    - component: two filled values that differ block the hit (battery is not screen).
+    - intent: fault and configure never match ("I want my screen to go black" is not the black
+      screen fault). None - entries cached before the field existed - is a wildcard.
+    - symptom, one-sided: when the query names a symptom and the entry has none, the query is about
+      something the entry never described, so it misses. The reverse stays a wildcard: a terser
+      paraphrase often names no symptom at all, and treating that as a miss dropped paraphrase
+      hits from 82% to 54%.
     """
-    if a.component and b.component and a.component != b.component:
+    if query.component and cached.component and query.component != cached.component:
         return False
-    if a.symptom and b.symptom:
-        return a.symptom == b.symptom
-    # One side has no symptom word. That is usually a terser paraphrase, so it stays a wildcard -
-    # except for symptoms that change the whole plan: a cracked screen is not a blank one, however
-    # little else the query says (eval/sets/near_miss.jsonl nm_8_1, nm_12_1).
-    return not ({a.symptom, b.symptom} & set(settings.guard_strict_symptoms))
+    if query.intent and cached.intent and query.intent != cached.intent:
+        return False
+    if query.symptom:
+        return query.symptom == cached.symptom
+    return True

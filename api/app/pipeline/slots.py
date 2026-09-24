@@ -57,29 +57,19 @@ def _best_label(text: str, labels: dict[str, list[str]]) -> str | None:
     return best_label
 
 
-# "I want my screen to go black while Smart Switch runs" names the same component and symptom as
-# the fault it resembles, so slots alone cannot separate them: the difference is that the user is
-# asking for the behaviour, not reporting it. eval/sets/near_miss.jsonl calls these differs_in
-# "intent" and they were 15 of our 17 false cache hits.
-_WISH_PATTERNS = (
-    r"\bi want\b",
-    r"\bi'?d like\b",
-    r"\bi wish\b",
-    r"\bhow (?:do|can) i (?:set|make|get|add|turn|enable|disable|configure|apply|shrink|fit)\b",
-    r"\bdeliberately\b",
-    r"\bon purpose\b",
-    r"\bintentionally\b",
-)
-_WISH_RE = re.compile("|".join(_WISH_PATTERNS), re.IGNORECASE)
+INTENT_FAULT = "fault"
+INTENT_CONFIGURE = "configure"
 
 
-def wants_configuration(text: str) -> bool:
-    """True when the query asks for a behaviour rather than reporting a fault.
+def _intent(text: str, phrases: dict[str, list[str]]) -> str:
+    """configure when the query asks for a behaviour, fault otherwise.
 
-    The cache uses it as a guard: a configuration request must not be answered with the
-    troubleshooting plan for the fault that shares its words.
+    "I want my screen to go black while Smart Switch runs" names the same component and symptom as
+    the fault it resembles; only the goal differs. eval/sets/near_miss.jsonl calls these differs_in
+    "intent", and they were 16 of the 18 near misses served a kit fault plan. The phrases live in
+    data/slot_lexicon.json; "how do I fix..." matches none of them, so it stays a fault.
     """
-    return bool(_WISH_RE.search(text or ""))
+    return INTENT_CONFIGURE if _best_label(text, phrases) else INTENT_FAULT
 
 
 def _best_component(text: str, labels: dict[str, list[str]]) -> str | None:
@@ -94,10 +84,11 @@ def _best_component(text: str, labels: dict[str, list[str]]) -> str | None:
 
 
 def extract_slots(norm_query: str) -> Slots:
-    """Component and symptom for the cache guard. Unknown fields stay None, which acts as a wildcard."""
+    """Component, symptom and intent for the cache guard. A missing component or symptom is None."""
     text = norm_query.lower()
     lexicon = _lexicon()
     return Slots(
         component=_best_component(text, lexicon.get("component", {})),
         symptom=_best_label(text, lexicon.get("symptom", {})),
+        intent=_intent(text, lexicon.get("intent", {})),
     )

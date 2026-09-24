@@ -8,7 +8,6 @@ from app.cache import store
 from app.cache.slot_guard import compatible
 from app.config import settings
 from app.models import CacheEntry, Slots
-from app.pipeline.slots import wants_configuration
 from app.retrieval import dense
 
 # One row per stored phrasing; _keys[i] says which cache entry row i belongs to.
@@ -17,6 +16,9 @@ from app.retrieval import dense
 _keys: list[str] = []
 _matrix: np.ndarray | None = None
 _index_lock = threading.Lock()
+# key -> phrasings already in the matrix. The engine puts an entry once with the query and again
+# when its variations land; without this the query was embedded and indexed a second time.
+_indexed: dict[str, set[str]] = {}
 
 
 def index(entry: CacheEntry) -> None:
@@ -26,20 +28,23 @@ def index(entry: CacheEntry) -> None:
     re-running the pipeline. That is the whole of the paraphrase hit rate in block A3.
     """
     global _matrix
-    texts = [text for text in entry.query_texts if text.strip()]
+    with _index_lock:
+        seen = _indexed.get(entry.key, set())
+    texts = list(dict.fromkeys(t for t in entry.query_texts if t.strip() and t not in seen))
     if not texts:
         return
     vectors = np.asarray(dense.embed(texts), dtype=np.float32)  # outside the lock: it is the slow part
     with _index_lock:
         _matrix = vectors if _matrix is None else np.vstack([_matrix, vectors])
         _keys.extend([entry.key] * len(texts))
+        _indexed.setdefault(entry.key, set()).update(texts)
 
 
 def rebuild() -> None:
     """Re-embed everything in the store. Called at startup after the snapshot is loaded."""
-    global _keys, _matrix
+    global _keys, _matrix, _indexed
     with _index_lock:
-        _keys, _matrix = [], None
+        _keys, _matrix, _indexed = [], None, {}
     for entry in store.entries().values():
         index(entry)
 
@@ -69,11 +74,7 @@ def lookup_with_score(norm_query: str, slots: Slots, siis_hash: str | None) -> t
             continue
         if entry.siis_hash != siis_hash:
             continue
-        if not compatible(slots, entry.slots):
-            continue
-        # A configuration request must not be served the fault plan that shares its words.
-        stored_query = entry.query_texts[0] if entry.query_texts else ""
-        if wants_configuration(norm_query) != wants_configuration(stored_query):
+        if not compatible(slots, entry.slots):  # component, intent, one-sided symptom
             continue
         store.record_hit(entry.key)
         return entry.plan, entry.key, score
