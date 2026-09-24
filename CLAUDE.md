@@ -63,7 +63,7 @@ normalize -> cache lookup -> enrich (LLM A) -> segment -> extract (LLM B)
           -> compile -> validate -> cache write
 ```
 
-- **normalize / slots** — whitespace and numbering fixes, URL/email scrub of the SIIS text *before any LLM sees it*, `siis_hash`; slots come from `data/slot_lexicon.json`, never from an LLM.
+- **normalize / slots** — whitespace and numbering fixes (every line of a numbered kit query), URL/email scrub of the SIIS text **and the complaint** *before any LLM sees them*, `siis_hash`; slots come from `data/slot_lexicon.json`, never from an LLM. The scrub (`compiler/scrub.py`) canonicalises first (HTML entities, NFKC, invisible characters) and every pattern is length-bounded, so it stays linear on hostile input; keep it that way (no unbounded `+`/`*` before a required character).
 - **cache** — Tier 0 exact (`norm_query + siis_hash`), Tier 1 semantic (ANN over each solved plan's original query *and* its 8–10 variations). A hit requires similarity ≥ τ **and** compatible slots **and** a matching SIIS hash. The SIIS cache ships empty; only the no-SIIS lookup table is pre-warmed.
 - **enrich** — canonical query, 1–3 intents, domain, 2–3 word title, 12 candidate variations filtered down to 8–10 (drop token Jaccard ≥ 0.6, drop embedding cosine < 0.6).
 - **segment / extract** — SIIS split into sections and numbered sentences `S1…Sn`; the LLM returns actions whose every step cites sentence ids.
