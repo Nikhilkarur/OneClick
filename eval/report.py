@@ -68,6 +68,12 @@ def commit_sha() -> str:
         return "unknown"
 
 
+def engine_models(load: dict | None) -> str | None:
+    """The models that answered the cold pass of `loadtest.py --mode api`, most used first."""
+    models = (((load or {}).get("api") or {}).get("cold") or {}).get("models") or {}
+    return ", ".join(f"{m} ({n} cold queries)" for m, n in models.items()) or None
+
+
 def embed_model() -> str:
     """The embedding model id as configured, read from config.py without importing the engine."""
     text = (API_DIR / "app" / "config.py").read_text()
@@ -121,8 +127,7 @@ def section1(gates: dict | None) -> list[str]:
             note = f"{non_empty} of {responses} responses had non-empty plans (gate replica, `{gates.get('git_sha')}`)."
         else:
             note = (
-                f"The gate replica checked {responses} responses and all had empty `contexts`: the engine's "
-                "extraction stages are not implemented yet. Empty plans pass every format rule trivially, "
+                f"The gate replica checked {responses} responses and all had empty `contexts`. Empty plans pass every format rule trivially, "
                 "so these cells stay unmeasured rather than reading 100%."
             )
     out = [
@@ -142,6 +147,42 @@ def ours(ablation: dict | None) -> dict | None:
     return next((v for v in ablation["variants"] if v["key"] == "screengraph" and v["measured"]), None)
 
 
+def judge_note(judge: dict) -> str:
+    steps = judge.get("steps") or {}
+    verdicts = steps.get("verdicts") or {}
+    issues = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in (steps.get("issues") or {}).items())
+    by_source = "; ".join(
+        f"{src} {v['step_accuracy_mean']:.2f} (n={v['n']})"
+        for src, v in (judge.get("by_source") or {}).items()
+        if v.get("step_accuracy_mean") is not None
+    )
+    parts = [
+        (
+            f"Step accuracy: {judge.get('judge_model')} as judge (`eval/judge.py`, "
+            f"{judge.get('prompt_version')}) over {judge['judged']} plans from {judge.get('source')}"
+        ),
+        f"by set: {by_source}" if by_source else "",
+        (
+            f"{steps.get('n', 0)} steps: {verdicts.get('correct', 0)} correct, {verdicts.get('partial', 0)} "
+            f"partial, {verdicts.get('wrong', 0)} wrong" + (f" (main issues: {issues})" if issues else "")
+        ),
+        (
+            f"{judge.get('order_problems', 0)} plans with an ordering problem, "
+            f"{judge.get('plans_missing_a_fix', 0)} missing an article fix, {judge.get('empty_plans', 0)} empty"
+        ),
+    ]
+    if judge.get("link_relevance_mean") is not None:
+        parts.append(
+            f"end-to-end link relevance {judge['link_relevance_mean']:.2f} / 2 over "
+            f"{judge['links_judged']} catalog links"
+        )
+    if judge.get("failed"):
+        parts.append(f"{judge['failed']} plans could not be judged and are left out")
+    if judge.get("self_graded"):
+        parts.append(f"{judge['self_graded']} plans were written by the judge's own model family")
+    return "_" + ". ".join(p for p in parts if p) + "._"
+
+
 def section2(judge: dict | None, ablation: dict | None) -> list[str]:
     step = NM if not judge else f"{judge['step_accuracy_mean']:.2f}"
     link = ours(ablation)
@@ -158,6 +199,8 @@ def section2(judge: dict | None, ablation: dict | None) -> list[str]:
     ]
     if not judge:
         out.append("_Step accuracy: not measured yet — `eval/judge.py` needs the engine's extracted steps._")
+    else:
+        out.append(judge_note(judge))
     if link:
         a, by = link["all"], link["by_owner"]
         split = ", ".join(
@@ -191,7 +234,8 @@ def _latency_rows(load: dict | None) -> tuple[list[tuple[str, str, str, str]], l
         out.append((name, target, ms(s["p50_ms"]), ms(s["p95_ms"])))
     if api:
         notes.append(
-            f"Measured over HTTP ({api['source']}), server-side `X-Latency-Ms` where the API sends it."
+            f"Measured over HTTP ({api['source']}), server-side `X-Latency-Ms` where the API sends it. "
+            "Cache rows are timed on the calls that hit, the cold row on the calls that missed."
         )
     elif cache:
         notes.append(
@@ -206,7 +250,13 @@ def section3(load: dict | None) -> list[str]:
     sections = [s for s in ((load or {}).get("api"), (load or {}).get("cache")) if s]
     ns = []
     for s in sections[:1]:
-        ns = [f"{p} n={s[p]['n']}" for p in ("repeat", "paraphrase", "cold") if s.get(p)]
+        ns = [
+            f"{p} n={s[p].get('timed_n', s[p]['n'])}"
+            + (f" of {s[p]['n']}" if s[p].get("timed_n", s[p]["n"]) != s[p]["n"] else "")
+            for p in ("repeat", "paraphrase", "cold")
+            if s.get(p)
+        ]
+        notes += list(s.get("notes") or [])
     out = [
         "## 3. Latency Benchmarks (N >= 30 requests per path)",
         "",
@@ -235,6 +285,14 @@ def section4(load: dict | None) -> list[str]:
         "| Cost derivation method | - | (prompt tokens + completion tokens) × rate |",
         "",
     ]
+    cold = ((load or {}).get("api") or {}).get("cold") or {}
+    if cold_cost is not None:
+        models = ", ".join(f"{m} {n}" for m, n in (cold.get("models") or {}).items())
+        out.append(
+            f"_Mean `meta.cost_usd` over {cold['n']} cold queries, priced from the token counts at the rates in "
+            f"`api/app/config.py` (`llm_prices`); models that answered: {models}. Models without a listed rate run "
+            "on a free plan and cost $0._"
+        )
     if para:
         out.append(
             f"_Hit rate over {para['n']} held-out paraphrases (`eval/sets/paraphrases.jsonl`, never used to warm "
@@ -351,7 +409,7 @@ def build(args) -> str:
     ablation, load_ = load("ablation.json", rd), load("loadtest.json", rd)
     header = [
         "# System Performance Metrics & Evaluation Report",
-        f"**Model(s):** {args.model or NM}",
+        f"**Model(s):** {args.model or engine_models(load_) or NM}",
         f"**Embeddings:** {args.embeddings or embed_model()}",
         f"**Environment:** {args.env or local_env()}",
         "",
