@@ -10,16 +10,69 @@ _DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
 class Settings(BaseModel):
-    # LLM (design doc: ADR-002)
-    primary_model: str = "gemini-flash"
-    fallback_model: str = "mistral-small"
-    llm_timeout_s: float = 3.0
-    prompt_version: str = "v1"
+    # ---- Engine (Vishaal) --------------------------------------------------------------------------
+    # LLM (ADR-002), tuned for free tiers (no billing). Measured 2026-09-24: every Gemini model
+    # answers 503 on the free tier under load, and Mistral's free plan rate-limits Small/Medium (429)
+    # but serves the open-weight Ministral 3B/8B/14B at ~80-100 tokens/s, concurrent calls allowed.
+    #
+    # Call B (extract) "select" mode: the model lists the article sentence ids of each action instead
+    # of rewriting steps (~5x fewer output tokens; steps are the article's own words). It races the
+    # quality model against the fast one and keeps the quality answer if it lands by the deadline.
+    extract_mode: str = "select"  # select (extract.v2) | rewrite (extract.v1: needs a fast paid model)
+    extract_model: str = "ministral-14b-latest"
+    extract_fast_model: str = "ministral-8b-latest"  # raced with extract_model; "" disables the race
+    extract_thinking: str = "low"  # Gemini models only
+    extract_prefer_deadline_s: float = 6.0  # the quality answer wins if it is back by then
+    # Call A (enrich). Free tier: intents come from call B and the 8-10 variations from a small model
+    # that runs alongside extraction, so no LLM sits on the critical path before extraction.
+    enrich_llm_on_critical_path: bool = False
+    enrich_model: str = "gemini-3.1-flash-lite"  # used only when enrich_llm_on_critical_path is on
+    enrich_thinking: str = "minimal"
+    variations_model: str = "ministral-14b-latest"  # background, so quality over speed
+    variations_budget_s: float = 10.0  # background: never delays a response
+    # Last resort for every call. A model answering 429 or 5xx is skipped for llm_cooldown_s.
+    fallback_model: str = "gemini-3-flash-preview"
+    fallback_reasoning: str = "none"  # Mistral fallback models only
+    llm_cooldown_s: float = 60.0
+    # Gemini 3 guidance: keep temperature at 1.0 (lower values can loop). Repeatability comes from
+    # the cache and the compiler, not from temperature.
+    llm_temperature_gemini: float = 1.0
+    llm_temperature_mistral: float = 0.0
+    # Cache-key tag (with prompt_versions below): change it whenever a prompt changes.
+    prompt_version: str = "enrich-v1+extract-v2+variations-v1"
+    prompt_versions: dict[str, str] = {"enrich": "v1", "extract": "v2", "variations": "v1"}
+    # USD per 1M tokens (input, output) for meta.cost_usd and /v1/metrics. Models not listed cost
+    # $0 here: the Ministral models run on Mistral's free plan.
+    llm_prices: dict[str, tuple[float, float]] = {
+        "gemini-3.1-flash-lite": (0.25, 1.50),
+        "gemini-3.5-flash-lite": (0.30, 2.50),
+        "gemini-3.8-flash": (0.75, 3.75),
+        "mistral-small-2603": (0.15, 0.60),
+    }
 
-    # Stage budgets in seconds (design doc: Reliability)
+    # Stage budgets in seconds (design doc: Reliability). The primary gets its own timeout inside
+    # the budget so the fallback still has time to answer.
+    enrich_primary_timeout_s: float = 1.5
     enrich_budget_s: float = 2.5
-    extract_budget_s: float = 3.5
+    extract_primary_timeout_s: float = 6.5
+    extract_budget_s: float = 7.0
     retrieval_budget_s: float = 0.5
+    llm_timeout_default_s: float = 3.0  # a client called without a stage timeout
+    enrich_max_tokens: int = 1024
+    extract_max_tokens: int = 1500  # select mode needs ~300-600; rewrite mode wants ~4096
+    variations_max_tokens: int = 600
+
+    # Segmenting and grounding (components 4, 6)
+    section_relevance_floor: float = 0.5  # below this a section is greyed out for that intent
+    section_embed_chars: int = 400  # heading + this much body is embedded for section relevance
+    grounding_min_shared_terms: int = 1
+    rules_only_score_cap: float = 0.5  # extraction fell back to rules: score says so
+
+    # Compiler (component 10)
+    description_min_words: int = 5  # counting "It will"
+    description_max_words: int = 7
+    action_dup_jaccard: float = 0.8  # steps this alike are the same action (multi-intent dedupe)
+    # ------------------------------------------------------------------------------------------------
 
     # Cache (ADR-004)
     # 0.80 measured on data/gold/cache_paraphrases.jsonl (scripts/eval_cache.py --sweep):
@@ -43,8 +96,8 @@ class Settings(BaseModel):
     # Response (ADR-006)
     include_meta: bool = True
 
-    # Console stream (Vishaal): replays data/fixtures until pipeline.run.run_stream is implemented
-    stream_mock: bool = True
+    # Console stream (Vishaal): True replays data/fixtures instead of running the pipeline (demo only)
+    stream_mock: bool = False
     stream_mock_time_scale: float = 1.0  # 1.0 = recorded stage timings; 0 = no delay (tests)
     stream_fixtures_dir: str | None = None  # None = <repo>/data/fixtures (not in the Docker image)
     # Retrieval (Karur, component 7): hybrid search over catalog entries / Screen Graph nodes

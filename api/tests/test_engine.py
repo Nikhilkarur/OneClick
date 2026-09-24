@@ -1,0 +1,291 @@
+"""Engine lane (C1, C4-C6, C8-C11, validate): the fixtures are the spec, the kit is the smoke test.
+
+Runs without LLM keys, so it exercises the rules-only path CI uses.
+"""
+
+import json
+import random
+import re
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import cache
+from app.compiler.compile import compile_with_report, dummy_link
+from app.compiler.scrub import has_leak, scrub
+from app.compiler.templates import build_goal
+from app.compiler.trimmer import trim_description, trim_title
+from app.compiler.validate import validate_with_report
+from app.main import app
+from app.models import DraftAction, DraftStep, Intent, LinkDecision, LinkTier
+from app.pipeline.categorize import categorize
+from app.pipeline.ground import ground_with_report
+from app.pipeline.multi_intent import dedupe_with_report
+from app.pipeline.normalize import clean_siis, normalize_query
+from app.pipeline.order import order
+from app.pipeline.run import run_with_variations
+from app.pipeline.segment import segment_with_sections, split_sections
+from app.schema import ContextDeeplinkResponse
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = ROOT / "data" / "fixtures"
+SCENARIOS = ["touch_lag", "email_not_responding", "touch_multi_intent"]
+KIT = json.loads((ROOT / "data/kit/siis_responses.json").read_text(encoding="utf-8"))["responses"]
+LEAK = re.compile(
+    r"https?://|www\.|\b[\w-]+\.(?:com|net|org|io|gov|edu)\b|[\w.+-]+@[\w-]+\.[\w.]+", re.IGNORECASE
+)
+
+client = TestClient(app)
+
+
+def _load(*parts):
+    return json.loads(FIXTURES.joinpath(*parts).read_text(encoding="utf-8"))
+
+
+def _stream(name):
+    return {e["stage"]: e["detail"] for e in _load(name, "stream.json")}
+
+
+def _drafts(name):
+    return [DraftAction.model_validate(a) for a in _load(name, "draft_actions.json")["actions"]]
+
+
+def _strings(obj, key=""):
+    if isinstance(obj, str):
+        if key != "deeplink":
+            yield obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from _strings(v, k)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _strings(v, key)
+
+
+# ---- C1 normalize + scrub ---------------------------------------------------------------------------
+def test_scrub_removes_every_kind_of_link_and_keeps_the_text():
+    assert scrub("Mail kidshome.pin@samsung.com today") == "Mail today"
+    assert scrub("See [the guide](https://x.example/y) here") == "See the guide here"
+    assert scrub("Visit www.samsung.com/support now.") == "Visit now."
+    assert scrub('Go to <a href="http://a.b">link</a>.') == "Go to link."
+    assert scrub("Tap Settings > Display.") == "Tap Settings > Display."
+    assert scrub("Step 1.In Settings, tap Display.") == "Step 1.In Settings, tap Display."
+    for text in ("http://x.y", "www.x", "a@b.com", "[a](b)", "samsung.com"):
+        assert has_leak(text) and not has_leak(scrub(text))
+
+
+def test_kit_articles_are_clean_after_normalize_and_keep_their_words():
+    for row in KIT:
+        clean, digest = clean_siis(row["siis_response"])
+        assert clean and len(digest) == 16 and not has_leak(clean) and not LEAK.search(clean)
+    glued = next(r for r in KIT if "kidshome" in r["siis_response"]["content"])
+    clean, _ = clean_siis(glued["siis_response"])
+    assert "kidshome" not in clean and "usingyourregisteredemailaddress" in clean  # only the address goes
+
+
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_normalize_matches_the_fixture_cache_keys(name):
+    req, miss = _load(name, "request.json"), _stream(name)["cache"]
+    assert normalize_query(req["query"]) == miss["norm_query"]
+    assert clean_siis(req["siis_response"])[1] == miss["siis_hash"]
+    assert normalize_query('1. "My Screen  is BLACK"') == "my screen is black"
+    assert clean_siis(None) == ("", None)
+
+
+# ---- C4 segment -------------------------------------------------------------------------------------
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_segment_reproduces_the_fixture_sentences(name):
+    clean, _ = clean_siis(_load(name, "request.json")["siis_response"])
+    expected = [(s["section"], s["text"]) for s in _stream(name)["segment"]["sentences"]]
+    got = [(section["heading"], text) for section in split_sections(clean) for text in section["sentences"]]
+    assert got == expected
+    sentences, sections = segment_with_sections(clean, [Intent(text="touch screen is slow")])
+    assert [s.id for s in sentences] == [f"S{n}" for n in range(1, len(sentences) + 1)]
+    assert all(0.0 <= s["relevance"][0] <= 1.0 for s in sections)
+
+
+# ---- C6 ground --------------------------------------------------------------------------------------
+@pytest.mark.parametrize("name", ["touch_lag", "email_not_responding"])
+def test_grounding_keeps_every_fixture_step_and_drops_inventions(name):
+    clean, _ = clean_siis(_load(name, "request.json")["siis_response"])
+    sentences, _ = segment_with_sections(clean, [Intent(text="screen problem")])
+    drafts = _drafts(name)
+    kept, report = ground_with_report(drafts, sentences)
+    assert report["kept_steps"] == report["proposed_steps"] == sum(len(d.steps) for d in drafts)
+
+    invented = DraftAction(
+        name="Recalibrate Touchscreen",
+        steps=[
+            DraftStep(text="Recalibrate the touchscreen from the Samsung Members app.", src_ids=["S2"]),
+            DraftStep(text="Tap the hidden developer switch.", src_ids=["S999"]),
+        ],
+    )
+    kept, report = ground_with_report([invented], sentences)
+    assert kept == [] and report["kept_steps"] == 0 and len(report["dropped_steps"]) == 2
+    assert report["dropped_steps"][1]["reason"] == "unknown_source"
+
+
+# ---- C8 categorize + C9 order -----------------------------------------------------------------------
+@pytest.mark.parametrize("name", SCENARIOS)
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_categorize_and_order_reproduce_the_fixture_from_any_input_order(name, seed):
+    expected = _drafts(name)
+    raw = [
+        a.model_copy(update={"category": "manual", "disruption_rank": 0, "depends_on": []}) for a in expected
+    ]
+    random.Random(seed).shuffle(raw)
+    got = categorize(raw)
+    by_name = {a.name: a for a in got}
+    for e in expected:
+        g = by_name[e.name]
+        assert (g.category, g.disruption_rank, g.depends_on) == (e.category, e.disruption_rank, e.depends_on)
+    for index in {a.intent_index for a in got}:
+        ordered = [a.name for a in order([a for a in got if a.intent_index == index])]
+        assert ordered == [a.name for a in expected if a.intent_index == index]
+
+
+def test_auto_needs_a_link_and_critical_wins_over_a_link():
+    link = LinkDecision(tier=LinkTier.dummy, entry_id="DL-DUMMY")
+    reset = DraftAction(name="Factory Data Reset", steps=[DraftStep(text="Reset.")], link=link)
+    toggle = DraftAction(name="Enable Dark Mode", steps=[DraftStep(text="Tap Dark mode.")], link=link)
+    bare = DraftAction(name="Enable Dark Mode", steps=[DraftStep(text="Tap Dark mode.")])
+    assert [a.category for a in categorize([reset, toggle, bare])] == ["critical", "auto", "manual"]
+
+
+# ---- C11 multi-intent -------------------------------------------------------------------------------
+def test_duplicate_actions_stay_only_in_the_more_relevant_goal():
+    intents = [Intent(text="a", relevance=0.4), Intent(text="b", relevance=0.9)]
+    step = [DraftStep(text="Restart your phone.", src_ids=["S1"])]
+    actions = [
+        DraftAction(name="Restart Your Device", steps=step, intent_index=0),
+        DraftAction(name="Restart Your Device", steps=step, intent_index=1),
+        DraftAction(name="Only Here", steps=[DraftStep(text="Tap it.")], intent_index=0),
+    ]
+    kept, report = dedupe_with_report(intents, actions)
+    assert [(a.name, a.intent_index) for a in kept] == [("Restart Your Device", 1), ("Only Here", 0)]
+    assert report == [{"action": "Restart Your Device", "kept_in_intent": 1, "removed_from_intents": [0]}]
+
+
+# ---- C10 compile ------------------------------------------------------------------------------------
+@pytest.mark.parametrize("name", SCENARIOS)
+def test_compiler_reproduces_the_fixture_plan(name):
+    stream = _stream(name)
+    intents = [Intent.model_validate(i) for i in stream["enrich"]["intents"]]
+    coverage = {x["intent_index"]: x["grounding_coverage"] for x in stream["compile"]["score_inputs"]}
+    goals, report = compile_with_report(
+        intents, _drafts(name), topics=stream["extract"]["topics"], coverage=coverage
+    )
+    assert goals == _load(name, "plan.json")["contexts"]
+    assert report["score_inputs"] == stream["compile"]["score_inputs"]
+
+
+def test_string_rules():
+    assert build_goal("Screen Damage Troubleshooting") == (
+        "Follow these steps to perform this Screen Damage Troubleshooting."
+    )
+    assert build_goal("wi-fi configuration", "Configuration") == (
+        "Follow these steps to perform this Wi-Fi Configuration."
+    )
+    assert trim_title("The Screen Display Damage Issue") == "Screen display damage"
+    assert trim_title("battery") == "Battery issue"
+    for draft in (
+        "It will help you locate the nearest Samsung service center and schedule",
+        "verify",
+        "",
+        "It will clear the temporary data of your email app.",
+        "It will verify your internet connection",
+    ):
+        out = trim_description(draft)
+        assert out.startswith("It will ") and 5 <= len(out.split()) <= 7 and not out.endswith("."), out
+    assert (
+        trim_description("It will verify your internet connection")
+        == "It will verify your internet connection"
+    )
+    link = dummy_link("Settings > Apps > Email app > Storage")
+    assert link["description"] == "Opens the email app storage settings page"
+    assert link["message"] == "Open email app storage screen"
+    assert all(
+        5 <= len(dummy_link(p)[k].split()) <= 7
+        for p in ("Settings > Display", "")
+        for k in ("description", "message")
+    )
+
+
+# ---- validate ---------------------------------------------------------------------------------------
+def test_validate_repairs_scrubs_and_drops_but_never_fails():
+    body = {
+        "contexts": [
+            {
+                "goal": "Follow these steps to perform this Screen Troubleshooting",
+                "title": "the black screen problem today",
+                "score": 1.7,
+                "actions": [
+                    {
+                        "actionName": "Visit Support",
+                        "description": "It will help you locate the nearest Samsung service center and schedule",
+                        "stepGroups": [{"steps": ["1. Go to www.samsung.com/support", "Call us"]}],
+                        "category": "auto",  # no link: must become manual
+                    },
+                    {"actionName": "Broken", "description": "x", "stepGroups": "nope"},
+                ],
+            },
+            {"goal": "junk", "title": "t", "score": 0.5, "actions": []},
+        ],
+        "meta": {"trace_id": "t"},
+    }
+    out, report = validate_with_report(body)
+    ContextDeeplinkResponse.model_validate(out)
+    (goal,) = out["contexts"]
+    assert goal["goal"].endswith("Screen Troubleshooting.") and goal["score"] == 1.0
+    assert 2 <= len(goal["title"].split()) <= 3
+    (action,) = goal["actions"]
+    assert action["category"] == "manual" and action["stepGroups"][0]["steps"] == ["Go to.", "Call us."]
+    assert report["url_leaks"] >= 1 and report["repairs"] == 1
+    assert out["meta"] == {"trace_id": "t"}
+    assert validate_with_report({})[0] == {"contexts": []}
+    assert validate_with_report({"contexts": "garbage"})[0]["contexts"] == []
+
+
+# ---- the whole pipeline on the kit (rules-only: no keys in CI) ---------------------------------------
+@pytest.fixture(scope="module")
+def kit_runs():
+    cache.clear()
+    runs = [run_with_variations(row["original_query"], row["siis_response"]) for row in KIT]
+    cache.clear()
+    return runs
+
+
+def test_every_kit_query_gets_a_valid_non_empty_leak_free_answer(kit_runs):
+    for row, (body, variations) in zip(KIT, kit_runs):
+        ContextDeeplinkResponse.model_validate(body)
+        assert body["contexts"], row["id"]
+        assert not [s for s in _strings(body["contexts"]) if LEAK.search(s) or has_leak(s)], row["id"]
+        for goal in body["contexts"]:
+            for action in goal["actions"]:
+                has_link = any(g.get("actionableDeeplink") for g in action["stepGroups"])
+                assert (action["category"] == "auto") == has_link, (row["id"], action["actionName"])
+        if not body["meta"]["cache_hit"]:  # a kit row that shares an article may hit the cache
+            assert 8 <= len(variations) <= 10, row["id"]
+
+
+def test_endpoint_is_always_200_and_schema_valid():
+    cache.clear()
+    row = KIT[0]
+    first = client.post(
+        "/v1/troubleshoot", json={"query": row["original_query"], "siis_response": row["siis_response"]}
+    )
+    second = client.post(
+        "/v1/troubleshoot", json={"query": row["original_query"], "siis_response": row["siis_response"]}
+    )
+    for r in (first, second):
+        assert r.status_code == 200 and r.headers["content-type"].startswith("application/json")
+        ContextDeeplinkResponse.model_validate(r.json())
+    assert first.headers["x-cache-hit"] == "false" and second.headers["x-cache-hit"] == "true"
+    assert second.json()["contexts"] == first.json()["contexts"]
+    for siis in (None, "", {"weird": 1}, "no headers, just words", {"content": "# T\n" + "x" * 5000}):
+        r = client.post("/v1/troubleshoot", json={"query": "screen is black", "siis_response": siis})
+        assert r.status_code == 200
+        ContextDeeplinkResponse.model_validate(r.json())
+    r = client.post("/v1/troubleshoot", json={"query": "screen is black"})
+    assert r.json()["contexts"] == [] and r.json()["meta"]["fallback"] == "no_siis_context"
