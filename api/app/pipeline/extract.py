@@ -2,6 +2,10 @@
 
 Two extractors with one output shape:
   llm    call B through the router (JSON-schema output); every step cites sentence ids.
+         select mode (settings.extract_mode, the free-tier default, prompt extract.v2): the model
+           lists the sentence ids of each action and the intents it sees; the steps are the
+           article's own sentences, split into single instructions.
+         rewrite mode (extract.v1): the model writes each step and cites its sentence ids.
   rules  no LLM: instruction sentences of the relevant sections become steps citing themselves.
          Grounded by construction. Used when the LLM path fails or runs out of budget, and in CI
          (no keys), so every SIIS request still gets a non-empty, honest answer.
@@ -9,6 +13,7 @@ Two extractors with one output shape:
 
 import re
 
+from app.config import settings
 from app.models import DraftAction, DraftStep, Intent, SiisSentence
 from app.pipeline.text import word_block
 
@@ -343,7 +348,7 @@ SELECT_SCHEMA = {
     "properties": {
         "goals": {
             "type": "array",
-            "maxItems": 3,
+            "maxItems": settings.max_intents,
             "items": {
                 "type": "object",
                 "properties": {
@@ -397,7 +402,7 @@ def actions_from_selection(
     actions: list[DraftAction] = []
     topics: list[str] = []
     intents: list[Intent] = []
-    for goal in (answer.get("goals") or [])[:3]:
+    for goal in (answer.get("goals") or [])[: settings.max_intents]:
         goal_actions = []
         for raw in goal.get("actions") or []:
             ids = [i for i in raw.get("src_ids") or [] if isinstance(i, str) and i in by_id]
@@ -467,7 +472,6 @@ def extract_with_topics(
     LLM first when a key is set; rules-only when it fails, returns nothing usable, or no key is set.
     Select mode also returns the intents it found in `info["intents"]` (the caller adopts them).
     """
-    from app.config import settings
     from app.llm.router import available
 
     rules_info = {"source": "rules", "model": None, "tokens_in": 0, "tokens_out": 0}

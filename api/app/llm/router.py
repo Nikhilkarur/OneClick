@@ -1,4 +1,7 @@
-"""ADR-002: Gemini primary, Mistral fallback on timeout/error; records tokens and cost.
+"""ADR-002: one primary model per stage, a fast model raced against it, one fallback; tokens and cost.
+
+On the free tier (settings, engine section) call B races Ministral 14B against 8B on Mistral and
+falls back to Gemini; with billing the stages can point at Gemini models instead.
 
     complete_json("extract", {"query": ..., "sentences": ...}, SCHEMA, stage="extract", info=info)
 
@@ -32,7 +35,6 @@ from app.llm.errors import LLMCallError
 
 PROMPTS = Path(__file__).resolve().parent / "prompts"
 _PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*\}\}")
-_MIN_FALLBACK_S = 0.5  # less than this left in the budget: not worth starting the fallback
 _COOLDOWN_KINDS = ("http_429", "http_5")  # capacity errors; a slow answer (timeout) is not one
 _cooldown_until: dict[str, float] = {}
 _cooldown_lock = threading.Lock()
@@ -60,6 +62,10 @@ def load_prompt(name: str, version: str) -> str:
 
 
 def prompt_version(name: str) -> str:
+    """The version of prompts/<name>.<version>.md to load. Call B's prompt follows extract_mode:
+    rewrite mode asks for rewritten steps, so it must not get the select-mode prompt."""
+    if name == "extract" and settings.extract_mode == "rewrite":
+        name = "extract_rewrite"
     return settings.prompt_versions.get(name, settings.prompt_version)
 
 
@@ -179,7 +185,10 @@ def complete_json(
         result = attempt(plan.model, min(plan.primary_timeout, plan.budget))
     if result is None:
         remaining = plan.budget - (time.perf_counter() - started)
-        if remaining >= _MIN_FALLBACK_S and settings.fallback_model not in (plan.model, plan.fast_model):
+        if remaining >= settings.llm_min_fallback_s and settings.fallback_model not in (
+            plan.model,
+            plan.fast_model,
+        ):
             result = attempt(settings.fallback_model, remaining)
     if info is not None:
         with lock:

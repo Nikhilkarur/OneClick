@@ -14,6 +14,7 @@ from app.compiler.compile import clean_step
 from app.compiler.scrub import has_leak, scrub
 from app.compiler.templates import build_goal
 from app.compiler.trimmer import trim_description, trim_title
+from app.config import settings
 from app.schema import ContextDeeplinkResponse
 
 _CATALOG_URI = re.compile(r"^bixby://[A-Za-z0-9_./\-]+$")
@@ -24,7 +25,6 @@ _GOAL = re.compile(
 _GOAL_LOOSE = re.compile(
     r"^Follow these steps to perform this (?P<topic>.+?) (?P<kind>Troubleshooting|Configuration)"
 )
-_MAX_PASSES = 3
 
 
 def _scrub_strings(obj, report: dict, in_link: bool = False):
@@ -132,7 +132,7 @@ def validate_with_report(body: dict) -> tuple[dict, dict]:
     if repaired != contexts or not first_pass_ok:
         report["repairs"] = 1
     contexts = repaired
-    for _ in range(_MAX_PASSES + sum(len(g["actions"]) for g in contexts)):
+    for _ in range(settings.validate_max_passes + sum(len(g["actions"]) for g in contexts)):
         try:
             ContextDeeplinkResponse.model_validate({"contexts": contexts})
             break

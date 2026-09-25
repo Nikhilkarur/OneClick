@@ -139,9 +139,24 @@ def test_normalize_matches_the_fixture_cache_keys(name):
     req, miss = _load(name, "request.json"), _stream(name)["cache"]
     assert normalize_query(req["query"]) == miss["norm_query"]
     assert clean_siis(req["siis_response"])[1] == miss["siis_hash"]
+
+
+def test_normalize_strips_kit_numbering_on_one_line_or_many():
     assert normalize_query('1. "My Screen  is BLACK"') == "my screen is black"
     assert normalize_query('1. "Screen is cracked."\n2. "Touch fails."') == "screen is cracked. touch fails."
+    assert normalize_query('1. "Screen is cracked." 2. "Touch fails."') == "screen is cracked. touch fails."
+    # Only the next number in sequence splits: a version number inside a complaint stays.
+    assert normalize_query("Android 14. The screen flickers") == "android 14. the screen flickers"
     assert clean_siis(None) == ("", None)
+
+
+def test_every_input_txt_query_normalizes_like_its_kit_row():
+    kit = ROOT / "data" / "kit"
+    lines = [line for line in (kit / "input.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = json.loads((kit / "siis_responses.json").read_text(encoding="utf-8"))["responses"]
+    assert len(lines) == len(rows)
+    for line, row in zip(lines, rows):
+        assert normalize_query(line) == normalize_query(row["original_query"])
 
 
 # ---- C4 segment -------------------------------------------------------------------------------------

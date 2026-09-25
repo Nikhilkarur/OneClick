@@ -5,10 +5,10 @@ One frame per pipeline stage, then ``done``:
     event: enrich
     data: {"stage":"enrich","ms":812.4,"summary":"...","detail":{...}}
 
-``done.detail`` is the full response body (contexts + meta); ``error`` ends the stream early. While the
-pipeline is a skeleton (settings.stream_mock) frames are replayed from data/fixtures/ and marked as mock:
-response header ``X-Mock: true`` and ``detail.mock`` on every frame. Flip settings.stream_mock to False
-once app.pipeline.run.run_stream exists and the route serves the real pipeline unchanged.
+``done.detail`` is the full response body (contexts + meta); ``error`` ends the stream early. The frames
+come from the real pipeline (app.pipeline.run.run_stream, which /v1/troubleshoot drains too). With
+settings.stream_mock on (demo only) they are replayed from data/fixtures/ instead and marked as mock:
+response header ``X-Mock: true`` and ``detail.mock`` on every frame.
 """
 
 import json
@@ -49,7 +49,7 @@ def _read(path: str):
 
 
 def _norm(text: str) -> str:
-    """Mock-only stand-in for pipeline.normalize: drop list numbering and quotes, lowercase."""
+    """Mock-only key for matching a fixture scenario (lighter than pipeline.normalize)."""
     text = re.sub(r"^\d+\.\s*", "", text.strip()).strip('"“” ')
     return re.sub(r"\s+", " ", text).lower()
 
@@ -131,11 +131,7 @@ def _live(req: TroubleshootRequest) -> Iterator[str]:
         for ev in pipeline_run.run_stream(req.query, req.siis_response):
             yield _frame(ev)
     except Exception as exc:  # noqa: BLE001 - the console has an Error state; never leave the stream hanging
-        summary = (
-            "pipeline.run_stream is not implemented yet"
-            if isinstance(exc, NotImplementedError)
-            else f"Pipeline failed: {type(exc).__name__}"
-        )
+        summary = f"Pipeline failed: {type(exc).__name__}"
         yield _frame(StageEvent(stage=StageName.error, summary=summary, detail={"error": type(exc).__name__}))
 
 

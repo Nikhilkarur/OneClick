@@ -42,14 +42,15 @@ def _words(text: str) -> list[str]:
 def trim_title(title: str) -> str:
     """2-3 words, sentence case, no trailing punctuation. Fillers go first when it is too long."""
     words = _words(title)
-    if len(words) > 3:
+    low, high = settings.title_min_words, settings.title_max_words
+    if len(words) > high:
         kept = [w for w in words if w.lower() not in _DANGLING]
-        words = kept[:3] if len(kept) >= 2 else words[:3]
-        while len(words) > 2 and words[-1].lower() in _DANGLING:
+        words = kept[:high] if len(kept) >= low else words[:high]
+        while len(words) > low and words[-1].lower() in _DANGLING:
             words.pop()
     if not words:
-        words = ["Troubleshooting", _TITLE_FALLBACK_WORD]
-    elif len(words) == 1:
+        words = ["Troubleshooting"]
+    while len(words) < low:
         words.append(_TITLE_FALLBACK_WORD)
     return " ".join(_sentence_case(words))
 

@@ -5,7 +5,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-# Repo root in a checkout; the Docker image sets ONECLICK_DATA because api/ is copied alone.
+# Repo root in a checkout. In the image api/ sits at /app, so this resolves to /data, where the
+# Dockerfile copies data/; docker-compose also sets ONECLICK_DATA explicitly.
 _DEFAULT_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
 
@@ -19,6 +20,8 @@ class Settings(BaseModel):
     # of rewriting steps (~5x fewer output tokens; steps are the article's own words). It races the
     # quality model against the fast one and keeps the quality answer if it lands by the deadline.
     extract_mode: str = "select"  # select (extract.v2) | rewrite (extract.v1: needs a fast paid model)
+    # The prompt follows the mode (router.prompt_version): select -> prompt_versions["extract"],
+    # rewrite -> prompt_versions["extract_rewrite"].
     extract_model: str = "ministral-14b-latest"
     extract_fast_model: str = "ministral-8b-latest"  # raced with extract_model; "" disables the race
     extract_thinking: str = "low"  # Gemini models only
@@ -32,7 +35,7 @@ class Settings(BaseModel):
     variations_budget_s: float = 10.0  # background: never delays a response
     # Last resort for every call. A model answering 429 or 5xx is skipped for llm_cooldown_s.
     fallback_model: str = "gemini-3-flash-preview"
-    fallback_reasoning: str = "none"  # Mistral fallback models only
+    fallback_reasoning: str = "none"  # reasoning_effort on every Mistral call; "" leaves it out
     llm_cooldown_s: float = 60.0
     # Gemini 3 guidance: keep temperature at 1.0 (lower values can loop). Repeatability comes from
     # the cache and the compiler, not from temperature.
@@ -40,7 +43,12 @@ class Settings(BaseModel):
     llm_temperature_mistral: float = 0.0
     # Cache-key tag (with prompt_versions below): change it whenever a prompt changes.
     prompt_version: str = "enrich-v1+extract-v2+variations-v1"
-    prompt_versions: dict[str, str] = {"enrich": "v1", "extract": "v2", "variations": "v1"}
+    prompt_versions: dict[str, str] = {
+        "enrich": "v1",
+        "extract": "v2",  # select mode
+        "extract_rewrite": "v1",  # rewrite mode
+        "variations": "v1",
+    }
     # USD per 1M tokens (input, output) for meta.cost_usd and /v1/metrics. Models not listed cost
     # $0 here: the Ministral models run on Mistral's free plan.
     llm_prices: dict[str, tuple[float, float]] = {
@@ -56,8 +64,10 @@ class Settings(BaseModel):
     enrich_budget_s: float = 2.5
     extract_primary_timeout_s: float = 6.5
     extract_budget_s: float = 7.0
-    retrieval_budget_s: float = 0.5
     llm_timeout_default_s: float = 3.0  # a client called without a stage timeout
+    llm_min_fallback_s: float = 0.5  # less than this left in a stage budget: skip the fallback model
+    variations_workers: int = 4  # background variations calls running at once
+    max_intents: int = 3  # intents (and so Goals) per query, from call A or call B
     enrich_max_tokens: int = 1024
     extract_max_tokens: int = 1500  # select mode needs ~300-600; rewrite mode wants ~4096
     variations_max_tokens: int = 600
@@ -71,6 +81,14 @@ class Settings(BaseModel):
     # Compiler (component 10)
     description_min_words: int = 5  # counting "It will"
     description_max_words: int = 7
+    title_min_words: int = 2
+    title_max_words: int = 3
+    # score = relevance + grounding coverage + link coverage, weighted; a catalog link counts in full,
+    # a dummy link half, a manual action not at all (it is left out of link coverage).
+    score_weights: tuple[float, float, float] = (0.4, 0.3, 0.3)
+    link_value_catalog: float = 1.0
+    link_value_dummy: float = 0.5
+    validate_max_passes: int = 3  # repair passes before offending actions are dropped one by one
     action_dup_jaccard: float = 0.8  # steps this alike are the same action (multi-intent dedupe)
 
     # No article in the request (cache/no_siis.py). Never answered from nothing: a cached plan, or the

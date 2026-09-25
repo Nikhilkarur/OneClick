@@ -6,17 +6,35 @@ import re
 from app.compiler.scrub import scrub
 
 _LIST_NUMBER = re.compile(r"^\s*\d+[.)]\s*")
+_FIRST_ITEM = re.compile(r"\s*1[.)]\s")
 _QUOTES = "\"'“”‘’ "
 _WHITESPACE = re.compile(r"\s+")
 _HASH_LENGTH = 16  # matches the siis_hash values in data/fixtures/*/cache_events.json
 
 
-def _unlist(query: str) -> str:
-    """Kit numbering and wrapping quotes removed from every line, lines joined into one text.
+def _split_inline(line: str) -> list[str]:
+    """'1. "a" 2. "b" 3. "c"' on one line (input.txt's form of a numbered kit query) as its items.
 
-    A kit query can be a numbered list of quoted complaints ('1. "..."\\n2. "..."').
+    Only a line that opens with item 1 is split, and only at the next number in sequence after a
+    space, so a stray "5." inside a complaint ("Android 14. The screen...") is left alone.
     """
-    lines = (_LIST_NUMBER.sub("", line).strip(_QUOTES) for line in (query or "").splitlines())
+    if not _FIRST_ITEM.match(line):
+        return [line]
+    items, number = [], 2
+    while match := re.search(rf"\s{number}[.)]\s", line):
+        items.append(line[: match.start()])
+        line, number = line[match.start() :], number + 1
+    return [*items, line]
+
+
+def _unlist(query: str) -> str:
+    """Kit numbering and wrapping quotes removed from every item, items joined into one text.
+
+    A kit query can be a numbered list of quoted complaints, one per line ('1. "..."\\n2. "..."', as
+    in siis_responses.json) or all on one line ('1. "..." 2. "..."', as in input.txt).
+    """
+    items = (item for line in (query or "").splitlines() for item in _split_inline(line))
+    lines = (_LIST_NUMBER.sub("", item).strip(_QUOTES) for item in items)
     return _WHITESPACE.sub(" ", " ".join(line for line in lines if line)).strip()
 
 

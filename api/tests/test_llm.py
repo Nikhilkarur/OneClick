@@ -3,7 +3,8 @@
 Covers the fallback matrix (timeout, 429, bad JSON, missing key, both down), the quality/fast race,
 answer rejection, cooldowns, cost accounting, and what the pipeline does with an LLM answer: select
 mode turns sentence ids into the article's own steps, invented ids are dropped, background variations
-reach the cache, and a failed LLM run is capped and never cached.
+reach the cache, and a failed LLM run is capped at the rules-only score (and, cached like any valid
+answer, repeats identically).
 """
 
 import json
@@ -239,7 +240,10 @@ def test_parse_json_tolerates_fences_and_rejects_non_objects():
             parse_json(bad)
 
 
-def test_prompts_render_every_placeholder():
+@pytest.mark.parametrize("mode, extract_version", [("select", "v2"), ("rewrite", "v1")])
+def test_prompts_render_every_placeholder(monkeypatch, mode, extract_version):
+    monkeypatch.setattr(settings, "extract_mode", mode)
+    assert router.prompt_version("extract") == extract_version  # each mode gets its own prompt
     for name, variables in (
         ("enrich", {"query": "q"}),
         ("extract", {"query": "q", "intents": "i", "sentences": "s"}),

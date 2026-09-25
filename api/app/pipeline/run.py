@@ -63,7 +63,6 @@ class _Run:
         self.tokens_in = 0
         self.tokens_out = 0
         self.degraded: list[str] = []
-        self.variations: list[str] = []
 
     def event(self, stage: S, started: float, summary: str, detail: dict) -> StageEvent:
         timing = traces.stage(self.trace, stage.value, started, summary)
@@ -256,7 +255,6 @@ def _ordered(actions: list[DraftAction]) -> list[DraftAction]:
 def _cold(
     run: _Run,
     query_text: str,
-    norm_query: str,
     slots: Slots,
     siis_clean: str,
     key: str,
@@ -443,7 +441,6 @@ def _cold(
                 cache.put(entry([query_text, *variations]))
         except Exception:  # noqa: BLE001 - a failed cache write only costs the next request time
             run.degraded.append("cache_write")
-    run.variations = variations
     if sink is not None:
         sink["variations"] = variations
     source = "retrieved_article" if retrieved is not None else None
@@ -519,7 +516,6 @@ def _run_stream(
         yield from _cold(
             run,
             query_text,
-            norm_query,
             slots,
             siis_clean,
             key,
@@ -578,7 +574,6 @@ def _no_article(
         yield from _cold(
             run,
             query_text,
-            norm_query,
             slots,
             article.text,
             key,

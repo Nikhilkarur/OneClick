@@ -46,7 +46,7 @@ def call(
     key = os.getenv(KEY_ENV)
     if not key:
         raise LLMCallError("no_key", f"{KEY_ENV} is not set")
-    model = model or settings.extract_model
+    model = model or settings.fallback_model  # the Gemini model; the router always passes one
     http = client or httpx.Client()
     try:
         response = None

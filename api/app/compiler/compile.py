@@ -11,10 +11,13 @@ from app.compiler import catalog
 from app.compiler.scrub import scrub
 from app.compiler.templates import build_goal, title_case_word
 from app.compiler.trimmer import trim_description, trim_title
+from app.config import settings
 from app.models import DraftAction, Intent, LinkTier
 
-SCORE_FORMULA = "0.4*relevance + 0.3*grounding_coverage + 0.3*link_coverage"
-_LINK_VALUE = {LinkTier.catalog: 1.0, LinkTier.dummy: 0.5}
+SCORE_FORMULA = "{:g}*relevance + {:g}*grounding_coverage + {:g}*link_coverage".format(
+    *settings.score_weights
+)
+_LINK_VALUE = {LinkTier.catalog: settings.link_value_catalog, LinkTier.dummy: settings.link_value_dummy}
 
 _STEP_NUMBERING = re.compile(r"^\s*(?:\d+\s*[.):-]|step\s*\d+\s*[:.)-]?|[-*•])\s*", re.IGNORECASE)
 _WHITESPACE = re.compile(r"\s+")
@@ -175,7 +178,8 @@ def _compile_actions(actions: list[DraftAction], report: dict) -> list[dict]:
 
 # ---- goals ------------------------------------------------------------------------------------------
 def goal_score(relevance: float, grounding: float, link: float, cap: float | None = None) -> float:
-    score = 0.4 * relevance + 0.3 * grounding + 0.3 * link
+    w_relevance, w_grounding, w_link = settings.score_weights
+    score = w_relevance * relevance + w_grounding * grounding + w_link * link
     score = min(1.0, max(0.0, score))
     if cap is not None:
         score = min(score, cap)
