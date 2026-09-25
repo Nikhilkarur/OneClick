@@ -338,5 +338,5 @@ def test_endpoint_is_always_200_and_schema_valid():
         r = client.post("/v1/troubleshoot", json={"query": "screen is black", "siis_response": siis})
         assert r.status_code == 200
         ContextDeeplinkResponse.model_validate(r.json())
-    r = client.post("/v1/troubleshoot", json={"query": "screen is black"})
+    r = client.post("/v1/troubleshoot", json={"query": "my washing machine drum makes a loud grinding noise"})
     assert r.json()["contexts"] == [] and r.json()["meta"]["fallback"] == "no_siis_context"

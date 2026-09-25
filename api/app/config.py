@@ -72,14 +72,27 @@ class Settings(BaseModel):
     description_min_words: int = 5  # counting "It will"
     description_max_words: int = 7
     action_dup_jaccard: float = 0.8  # steps this alike are the same action (multi-intent dedupe)
+
+    # No article in the request (cache/no_siis.py). Never answered from nothing: a cached plan, or the
+    # pipeline over a remembered article, else empty with fallback no_siis_context. Both gates are
+    # stricter than the with-article cache because the article hash no longer guards the match.
+    # Measured 2026-09-25 on the kit plans + real variations, paraphrases (200), unseen (15):
+    no_siis_plan_threshold: float = 0.80  # 80% paraphrase hits, 3/200 other-article plans, 0/15 unseen
+    article_match_threshold: float = 0.82  # query vs remembered article (title or best section)
+    article_match_margin: float = 0.04  # ...and a clear winner: 7 right, 0 wrong, 0/15 unseen
+    article_memory_max: int = 500  # remembered articles kept, oldest dropped first
+    # The kit plans the no-article table is pre-warmed from; None = <data_dir>/results.jsonl, else the
+    # repo-root results.jsonl. The SIIS cache itself still ships empty.
+    no_siis_table_path: str | None = os.getenv("ONECLICK_RESULTS")
     # ------------------------------------------------------------------------------------------------
 
     # Cache (ADR-004)
-    # 0.75, decided 2026-09-24 with the intent slot and the one-sided symptom rule (slot_guard.py),
-    # measured on the real cache (results.jsonl variations) against eval/sets/paraphrases.jsonl
-    # (200) and near_miss.jsonl (60): scripts/eval_cache.py --sweep. The guards hold false hits
-    # at or under 2%; the threshold trades paraphrase hits (A3 needs >= 80%) against margin.
-    cache_sim_threshold: float = 0.75
+    # 0.70, decided 2026-09-25 (sweep 0.55-0.85, real cache: results.jsonl variations, intent slot and
+    # one-sided symptom rule). With the guards in place near-miss false hits stay at 1/60 and wrong-
+    # article plans at 0 at every threshold, so the threshold only trades paraphrase hits: 83.5% at
+    # 0.70 (a 3.5-point margin over A3's 80%) against 80.5% at 0.75. 0.70 is the lowest value where
+    # every hit still serves its own row's plan; at 0.68 a hit starts serving a sibling row's plan.
+    cache_sim_threshold: float = 0.70
     sqlite_path: str = os.getenv("ONECLICK_SQLITE", "cache.sqlite")
 
     # Where data/kit and data/build live. Set ONECLICK_DATA in the container.

@@ -4,8 +4,8 @@
     Tier 1  semantic     cosine over every stored phrasing         ~20 ms
             guarded by   slots agree  AND  same article hash
 
-The SIIS cache ships empty: the scorer's first call has to be genuinely cold. Only the no-SIIS
-lookup table (cache/lookup.py) is pre-warmed from the kit.
+The SIIS cache ships empty: the scorer's first call has to be genuinely cold. Requests without an
+article go through cache/no_siis.py, whose kit table and article memory are pre-warmed at startup.
 """
 
 from app.cache import exact, semantic, store

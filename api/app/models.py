@@ -111,6 +111,8 @@ class ResponseMeta(BaseModel):
     cost_usd: float = 0.0
     trace_id: str | None = None
     fallback: str | None = None  # no_match | no_siis_context | None
+    # Requests without an article only: where the answer came from (cached_plan | retrieved_article).
+    source: str | None = None
 
 
 class StageName(str, Enum):

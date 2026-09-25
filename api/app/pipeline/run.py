@@ -7,7 +7,8 @@ stream can never disagree. Every stage degrades instead of raising (hard rule 4)
     enrich fails      -> the query as the only intent, template variations
     extract fails     -> rules-only steps from the relevant sections, score capped
     nothing grounded  -> empty contexts, fallback "no_match" (never a fabricated step)
-    no SIIS           -> no-SIIS lookup table, else empty with fallback "no_siis_context"
+    no SIIS           -> a cached plan, else the pipeline over a remembered article, else empty with
+                         fallback "no_siis_context" (cache/no_siis.py; never an LLM filling the gap)
 """
 
 import time
@@ -15,8 +16,8 @@ from collections.abc import Iterator
 from concurrent.futures import wait
 
 from app import cache
-from app.cache import store
-from app.cache.no_siis import lookup_no_siis
+from app.cache import exact as exact_tier
+from app.cache import no_siis, store
 from app.compiler.compile import compile_with_report
 from app.compiler.validate import validate_with_report
 from app.config import settings
@@ -86,6 +87,7 @@ class _Run:
         tier: str | None = None,
         fallback: str | None = None,
         latency: float | None = None,
+        source: str | None = None,
     ) -> StageEvent:
         """The final frame; also records the trace and the metrics window (once per request).
 
@@ -102,6 +104,7 @@ class _Run:
             cost_usd=round(self.cost, 6),
             trace_id=self.trace.trace_id,
             fallback=fallback,
+            source=source,
         )
         self.trace.cache_tier = tier
         self.trace.model = meta.model
@@ -154,7 +157,11 @@ def _cache_detail(norm_query: str, slots: Slots, key: str, siis_hash: str | None
     }
 
 
-def _serve_hit(run: _Run, hit: "cache.CacheHit", detail: dict, started: float) -> Iterator[StageEvent]:
+def _serve_hit(
+    run: _Run, hit, detail: dict, started: float, *, no_article: bool = False
+) -> Iterator[StageEvent]:
+    """A cached plan, re-validated (hard rule 3). `no_article`: the request carried none, so the answer
+    is tagged fallback no_siis_context, source cached_plan."""
     body, report = validate_with_report({"contexts": (hit.plan or {}).get("contexts", [])})
     entry = store.entries().get(hit.key)
     matched = entry.query_texts[0] if entry and entry.query_texts else None
@@ -162,11 +169,15 @@ def _serve_hit(run: _Run, hit: "cache.CacheHit", detail: dict, started: float) -
         hit.as_detail(),
         query=run.query,
         matched_query=matched,
-        siis_hash_match=True,
+        siis_hash_match=not no_article,
         slots_match=True,
         validate=report,
     )
-    yield run.event(S.cache, started, f"{hit.tier.capitalize()} cache hit", detail)
+    where = "no-article plan table" if getattr(hit, "source", None) == "kit_table" else "cache"
+    yield run.event(S.cache, started, f"{hit.tier.capitalize()} hit from the {where}", detail)
+    if no_article:
+        yield run.done(body["contexts"], tier=hit.tier, fallback=FALLBACK_NO_SIIS, source="cached_plan")
+        return
     fallback = None if body["contexts"] else FALLBACK_NO_MATCH
     yield run.done(body["contexts"], tier=hit.tier, fallback=fallback)
 
@@ -253,7 +264,10 @@ def _cold(
     *,
     wait_variations: bool = False,
     sink: dict | None = None,
+    retrieved: "no_siis.RetrievedArticle | None" = None,
 ):
+    """The full pipeline. `retrieved`: the request had no article and this remembered one matched it;
+    scores are scaled by the match confidence and the answer is tagged as such."""
     # Free tier: the variations call starts now and runs next to extraction (never on the answer's path).
     try:
         future = start_variations(query_text)
@@ -396,6 +410,11 @@ def _cold(
     )
 
     fallback = None if contexts else FALLBACK_NO_MATCH
+    if retrieved is not None:
+        # The article was matched, not given: the score says how sure that match is.
+        for goal in contexts:
+            goal["score"] = round(min(1.0, max(0.0, goal["score"] * retrieved.similarity)), 2)
+        fallback = FALLBACK_NO_SIIS
     answer_ready_ms = run.elapsed_ms()
     if future is not None:
         if wait_variations:
@@ -427,7 +446,8 @@ def _cold(
     run.variations = variations
     if sink is not None:
         sink["variations"] = variations
-    yield run.done(contexts, fallback=fallback, latency=answer_ready_ms)
+    source = "retrieved_article" if retrieved is not None else None
+    yield run.done(contexts, fallback=fallback, latency=answer_ready_ms, source=source)
 
 
 def _late_variations(future, query_text: str, slots: Slots, entry) -> None:
@@ -478,21 +498,12 @@ def _run_stream(
     detail = _cache_detail(norm_query, slots, key, siis_hash, siis_title(siis))
 
     if not siis_clean:
-        plan = None
-        try:
-            plan = lookup_no_siis(norm_query)
-        except Exception:  # noqa: BLE001 - NotImplementedError until the lookup table ships
-            plan = None
-        if plan:
-            body, _ = validate_with_report({"contexts": plan.get("contexts", [])})
-            yield run.event(
-                S.cache, t, "No article: answered from the no-SIIS lookup table", {**detail, "tier": "lookup"}
-            )
-            yield run.done(body["contexts"], fallback=None if body["contexts"] else FALLBACK_NO_SIIS)
-            return
-        yield run.event(S.cache, t, "No article in the request: nothing to ground steps in", detail)
-        yield run.done([], fallback=FALLBACK_NO_SIIS)
+        yield from _no_article(run, t, query_text, norm_query, slots, key, detail, wait_variations, sink)
         return
+    try:
+        no_siis.remember_article_later(siis_clean, siis_hash, siis_title(siis) or "")
+    except Exception:  # noqa: BLE001 - memory is an extra; the request goes on
+        run.degraded.append("article_memory")
 
     hit = _lookup(norm_query, slots, siis_hash)
     if hit is not None:
@@ -515,6 +526,66 @@ def _run_stream(
             siis_hash,
             wait_variations=wait_variations,
             sink=sink,
+        )
+
+
+def _no_article(
+    run: _Run,
+    t: float,
+    query_text: str,
+    norm_query: str,
+    slots: Slots,
+    key: str,
+    detail: dict,
+    wait_variations: bool,
+    sink: dict | None,
+) -> Iterator[StageEvent]:
+    """No article: the same question answered before, a close cached plan, or the pipeline over a
+    remembered article. Otherwise empty - the LLM never fills the gap (FAQ Q14, gate G5)."""
+    detail["threshold"] = settings.no_siis_plan_threshold
+    try:
+        plan = exact_tier.get(key)
+        hit = cache.CacheHit(plan, tier="exact", key=key) if plan is not None else None
+        hit = hit or no_siis.lookup_no_siis(norm_query, slots)
+    except Exception:  # noqa: BLE001 - a broken lookup only means no cached answer
+        hit = None
+    if hit is not None:
+        yield from _serve_hit(run, hit, detail, t, no_article=True)
+        return
+    try:
+        article = no_siis.find_article(norm_query)
+    except Exception:  # noqa: BLE001
+        article = None
+    if article is None:
+        yield run.event(
+            S.cache, t, "No article, and no cached plan or remembered article is close enough", detail
+        )
+        yield run.done([], fallback=FALLBACK_NO_SIIS)
+        return
+    detail["retrieved_article"] = {
+        "title": article.title,
+        "siis_hash": article.siis_hash,
+        "similarity": round(article.similarity, 3),
+        "threshold": settings.article_match_threshold,
+    }
+    yield run.event(
+        S.cache,
+        t,
+        f"No article: matched the remembered article '{article.title}' ({article.similarity:.2f})",
+        detail,
+    )
+    with store.single_flight(key):
+        yield from _cold(
+            run,
+            query_text,
+            norm_query,
+            slots,
+            article.text,
+            key,
+            None,
+            wait_variations=wait_variations,
+            sink=sink,
+            retrieved=article,
         )
 
 

@@ -1,10 +1,12 @@
 """OneClick API entrypoint."""
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.cache import no_siis
 from app.obs import readiness
 from app.routes import device, metrics, stream, troubleshoot
 
@@ -12,6 +14,10 @@ from app.routes import device, metrics, stream, troubleshoot
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     readiness.warm()  # catalog, Screen Graph, vector index, cache snapshot
+    try:
+        no_siis.prewarm()  # kit plans + kit articles for requests without an article (~2 s)
+    except Exception:  # noqa: BLE001 - loads lazily on the first no-article request instead
+        logging.getLogger("oneclick").warning("no-article pre-warm failed; it will load on first use")
     yield
 
 

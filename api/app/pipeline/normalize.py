@@ -35,16 +35,21 @@ def display_query(query: str) -> str:
 
 
 def siis_text(siis: dict | str | None) -> str:
-    """The article body from whatever shape the request carries ({title, content} in the kit)."""
-    if siis is None:
-        return ""
+    """The article body from either accepted shape: a plain string (the guide's example) or
+    `{title, content}` (the kit and the FAQ).
+
+    Missing, `null`, `""`, `{}`, whitespace-only content and a title with no content all come back
+    as "" - one "no article" case for the caller. A title alone holds no steps to ground.
+    """
     if isinstance(siis, str):
         return siis
-    content = siis.get("content")
-    if isinstance(content, str):
-        return content
-    # Unknown shape: every string value, in order, so nothing the article says is lost.
-    return "\n".join(value for value in siis.values() if isinstance(value, str))
+    if not isinstance(siis, dict):
+        return ""
+    if "content" in siis:
+        content = siis["content"]
+        return content if isinstance(content, str) else ""
+    # Unknown shape: every string value but the title, in order, so nothing the article says is lost.
+    return "\n".join(v for k, v in siis.items() if k != "title" and isinstance(v, str))
 
 
 def siis_title(siis: dict | str | None) -> str | None:

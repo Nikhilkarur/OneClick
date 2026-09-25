@@ -49,6 +49,9 @@ def rebuild() -> None:
         index(entry)
 
 
+_ANY_ARTICLE = object()
+
+
 def lookup_with_score(norm_query: str, slots: Slots, siis_hash: str | None) -> tuple[dict, str, float] | None:
     """The plan of the closest stored phrasing, when it is close enough and does not contradict.
 
@@ -56,6 +59,19 @@ def lookup_with_score(norm_query: str, slots: Slots, siis_hash: str | None) -> t
     article hash matches. The last one stops the same question with a different article from
     being served a stale plan.
     """
+    return _search(norm_query, slots, siis_hash, settings.cache_sim_threshold)
+
+
+def lookup_any_article(norm_query: str, slots: Slots, threshold: float) -> tuple[dict, str, float] | None:
+    """The same search for a request that carries no article: any cached plan may answer.
+
+    Without the article hash guarding the match, the caller passes a stricter threshold
+    (settings.no_siis_plan_threshold); the slot guard still applies.
+    """
+    return _search(norm_query, slots, _ANY_ARTICLE, threshold)
+
+
+def _search(norm_query: str, slots: Slots, siis_hash, threshold: float) -> tuple[dict, str, float] | None:
     with _index_lock:  # one consistent snapshot; a concurrent index() may add rows after this
         matrix, keys = _matrix, list(_keys)
     if matrix is None or not keys:
@@ -67,12 +83,12 @@ def lookup_with_score(norm_query: str, slots: Slots, siis_hash: str | None) -> t
     entries = store.entries()
     for position in np.argsort(-similarities):
         score = float(similarities[position])
-        if score < settings.cache_sim_threshold:
+        if score < threshold:
             return None  # sorted, so nothing further can qualify
         entry = entries.get(keys[position])
         if entry is None:
             continue
-        if entry.siis_hash != siis_hash:
+        if siis_hash is not _ANY_ARTICLE and entry.siis_hash != siis_hash:
             continue
         if not compatible(slots, entry.slots):  # component, intent, one-sided symptom
             continue
