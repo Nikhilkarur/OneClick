@@ -1,4 +1,5 @@
-"""The pure parts of loadtest.py: hashing, summaries and target verdicts. No engine, no network."""
+"""loadtest.py without an engine or network: hashing, summaries, target verdicts, and API mode against a
+faked client, including how near-miss hits are classified."""
 
 import loadtest
 

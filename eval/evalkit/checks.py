@@ -14,7 +14,7 @@ import json
 import math
 import re
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from evalkit.paths import DEPENDENCIES_PATH, use_api_package
 from evalkit.stats import norm_query, tokens
@@ -33,9 +33,6 @@ class Finding:
     @property
     def block(self) -> str:
         return CODE_BLOCK.get(self.code, "A1")
-
-    def to_dict(self) -> dict:
-        return {**asdict(self), "block": self.block}
 
 
 # Which scorer block each finding belongs to. A1 findings are further grouped into A1_RULES.

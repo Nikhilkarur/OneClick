@@ -35,9 +35,9 @@ python scripts/make_results.py        # cold run over data/kit -> results.jsonl
 # Evaluation (run from repo root, against a running API)
 python eval/sets/validate_sets.py  # test sets + gold labels; runs in CI, so edit a set and check this
 python eval/tools/label_gold.py --owner <you>   # label your ~33 of data/gold/deeplink_gold.jsonl
-python eval/gate_replica.py   # G2-G5 + A1-A5, each query twice on an empty cache
+python eval/gate_replica.py --api http://localhost:8000 --results results.jsonl   # G2-G5 + A1-A5, each query twice on an empty cache
 python eval/judge.py          # step accuracy 0-3, deeplink relevance 0-2
-python eval/loadtest.py       # p50/p95 for repeat-hit, paraphrase-hit, cold paths
+python eval/loadtest.py --mode api --api http://localhost:8000   # p50/p95 for repeat-hit, paraphrase-hit, cold
 python eval/report.py         # regenerates docs/metrics.md
 
 # Console stream: replays data/fixtures while the pipeline is a skeleton (run from repo root)
