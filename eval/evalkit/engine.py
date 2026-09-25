@@ -23,7 +23,7 @@ use_api_package()
 
 from app import cache, retrieval
 from app.config import settings
-from app.models import CacheEntry, DraftAction, DraftStep, Slots
+from app.models import CacheEntry, DraftAction, DraftStep
 from app.obs import readiness
 from app.pipeline.slots import extract_slots
 from app.screengraph.resolver import resolve
@@ -33,7 +33,6 @@ VECTORS_PATH = DATA_DIR / "build" / "catalog_vectors.npz"
 
 __all__ = [
     "CacheEntry",
-    "Slots",
     "cache",
     "extract_slots",
     "hybrid_top1",

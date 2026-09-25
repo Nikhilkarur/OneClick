@@ -18,8 +18,8 @@ hands over to **Try it live**, which streams the real API, and ends on what is m
 
 The live section calls `POST /v1/troubleshoot/stream` at `NEXT_PUBLIC_API_URL` (default
 `http://127.0.0.1:8000`, not `localhost`: uvicorn binds IPv4 only and browsers may try IPv6 first).
-While the engine is a skeleton the API serves its mock replay; every frame then carries
-`detail.mock` and the section shows a "Mock replay" badge instead of passing a replay off as live.
+If the API is switched to its mock replay (`settings.stream_mock`, off by default), every frame
+carries `detail.mock` and the section shows a "Mock replay" badge instead of passing a replay off as live.
 Its presets are real requests from `data/fixtures/` and `eval/sets/`.
 
 ```bash
@@ -63,7 +63,7 @@ sections, SplitText for the hero. Three traps cost time here, so avoid them:
 
 | Path | What it is |
 | --- | --- |
-| `lib/trace.ts` | Types for the SSE stage events, plus `stageDurations` / `totalMs`. |
+| `lib/trace.ts` | Types for the SSE stage events, plus which stages are LLM calls (`LLM_STAGES`). |
 | `lib/plan.ts` | The official response shape (`ContextDeeplinkResponse`), as far as the page reads it. |
 | `lib/checks.ts` | The graded output rules, a TypeScript mirror of `eval/evalkit/checks.py`. Keep them in step. |
 | `lib/stream.ts` | The SSE client for the live section. |
@@ -74,17 +74,16 @@ sections, SplitText for the hero. Three traps cost time here, so avoid them:
 
 ## Rules this UI follows
 
-- **One colour, one meaning.** Accent is "the engine decided", green is *proven* and only that
-  (grounded, verified, gate passed), amber is disruptive, red is refused. The story page uses a
-  Samsung palette: lime is the punch colour (proven things and calls to action), pink is only ever
-  time inside an LLM call, red is only ever refused. If a colour
-  ever means two things, the demo is lying.
+- **One colour, one meaning.** The story page uses a Samsung palette: lime is the punch colour
+  (proven things and calls to action), pink is only ever time inside an LLM call, red is only ever
+  refused, amber is disruptive. If a colour ever means two things, the demo is lying.
 - **Every number on screen is real.** The timings, scores, coverage and counts come from the
   fixture, never from a literal typed into a component. Judges see these same numbers in the video.
 - **`ms` on a stage event is that stage's own duration**, not elapsed time since the request
   started; `done.ms` is the total. Differencing consecutive events is wrong.
-- **The dropped step is not collapsible.** A step the model proposed and the engine refused is the
-  strongest claim the product makes, so it is always on screen.
+- **The dropped step gets its own beat.** A step the model proposed and the engine refused is the
+  strongest claim the product makes, so the grounding section stops on it (the cited sentence, the
+  failed match, the stamp) before throwing it out.
 - **Every number says who measured it.** Resolver and cache figures from the mapping lane are
   labelled as such, and anything that needs the whole engine running says pending.
 
