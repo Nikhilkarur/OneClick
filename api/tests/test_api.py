@@ -22,5 +22,6 @@ def test_all_modules_import():
     import pkgutil
 
     import app
+
     for m in pkgutil.walk_packages(app.__path__, "app."):
         importlib.import_module(m.name)

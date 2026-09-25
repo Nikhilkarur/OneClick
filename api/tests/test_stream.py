@@ -1,4 +1,4 @@
-"""POST /v1/troubleshoot/stream: SSE framing, mock replay from fixtures, and the live-pipeline fallback."""
+"""POST /v1/troubleshoot/stream: SSE framing, the live pipeline, and mock replay from fixtures."""
 
 import json
 from pathlib import Path

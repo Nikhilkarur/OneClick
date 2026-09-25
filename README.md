@@ -26,10 +26,12 @@ pytest
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | /health | Readiness check |
-| POST | /v1/troubleshoot | Complaint + SIIS in, troubleshooting plan out |
+| POST | /v1/troubleshoot | Complaint + SIIS in, troubleshooting plan out (no SIIS: a remembered plan or article, else empty) |
 | POST | /v1/troubleshoot/stream | Same engine, live stage events (console) |
-| POST | /v1/device/apply, /v1/device/validate | Simulated device for the validation loop |
-| GET | /v1/metrics, /v1/trace/{id} | Observability |
+| GET | /v1/metrics, /v1/traces, /v1/trace/{id} | Observability |
+
+The simulated device (`/v1/device/apply`, `/v1/device/validate`) is designed but not in this submission;
+see the last section of [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Repository layout
 
@@ -49,4 +51,4 @@ pytest
 | `data/` | Kit files, gold labels, slot lexicon, dependency table |
 | `docs/` | Architecture, metrics.md, deck, video link |
 
-See `CONTRIBUTING.md` before opening a PR.
+Read [CLAUDE.md](CLAUDE.md) (commands, hard rules, gotchas) and [docs/TEAM.md](docs/TEAM.md) (who owns what) before opening a PR.

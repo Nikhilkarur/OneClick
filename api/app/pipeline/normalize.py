@@ -6,17 +6,35 @@ import re
 from app.compiler.scrub import scrub
 
 _LIST_NUMBER = re.compile(r"^\s*\d+[.)]\s*")
+_FIRST_ITEM = re.compile(r"\s*1[.)]\s")
 _QUOTES = "\"'“”‘’ "
 _WHITESPACE = re.compile(r"\s+")
 _HASH_LENGTH = 16  # matches the siis_hash values in data/fixtures/*/cache_events.json
 
 
-def _unlist(query: str) -> str:
-    """Kit numbering and wrapping quotes removed from every line, lines joined into one text.
+def _split_inline(line: str) -> list[str]:
+    """'1. "a" 2. "b" 3. "c"' on one line (input.txt's form of a numbered kit query) as its items.
 
-    A kit query can be a numbered list of quoted complaints ('1. "..."\\n2. "..."').
+    Only a line that opens with item 1 is split, and only at the next number in sequence after a
+    space, so a stray "5." inside a complaint ("Android 14. The screen...") is left alone.
     """
-    lines = (_LIST_NUMBER.sub("", line).strip(_QUOTES) for line in (query or "").splitlines())
+    if not _FIRST_ITEM.match(line):
+        return [line]
+    items, number = [], 2
+    while match := re.search(rf"\s{number}[.)]\s", line):
+        items.append(line[: match.start()])
+        line, number = line[match.start() :], number + 1
+    return [*items, line]
+
+
+def _unlist(query: str) -> str:
+    """Kit numbering and wrapping quotes removed from every item, items joined into one text.
+
+    A kit query can be a numbered list of quoted complaints, one per line ('1. "..."\\n2. "..."', as
+    in siis_responses.json) or all on one line ('1. "..." 2. "..."', as in input.txt).
+    """
+    items = (item for line in (query or "").splitlines() for item in _split_inline(line))
+    lines = (_LIST_NUMBER.sub("", item).strip(_QUOTES) for item in items)
     return _WHITESPACE.sub(" ", " ".join(line for line in lines if line)).strip()
 
 
@@ -35,16 +53,21 @@ def display_query(query: str) -> str:
 
 
 def siis_text(siis: dict | str | None) -> str:
-    """The article body from whatever shape the request carries ({title, content} in the kit)."""
-    if siis is None:
-        return ""
+    """The article body from either accepted shape: a plain string (the guide's example) or
+    `{title, content}` (the kit and the FAQ).
+
+    Missing, `null`, `""`, `{}`, whitespace-only content and a title with no content all come back
+    as "" - one "no article" case for the caller. A title alone holds no steps to ground.
+    """
     if isinstance(siis, str):
         return siis
-    content = siis.get("content")
-    if isinstance(content, str):
-        return content
-    # Unknown shape: every string value, in order, so nothing the article says is lost.
-    return "\n".join(value for value in siis.values() if isinstance(value, str))
+    if not isinstance(siis, dict):
+        return ""
+    if "content" in siis:
+        content = siis["content"]
+        return content if isinstance(content, str) else ""
+    # Unknown shape: every string value but the title, in order, so nothing the article says is lost.
+    return "\n".join(v for k, v in siis.items() if k != "title" and isinstance(v, str))
 
 
 def siis_title(siis: dict | str | None) -> str | None:

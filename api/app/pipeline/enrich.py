@@ -173,7 +173,7 @@ SCHEMA = {
         "intents": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 3,
+            "maxItems": settings.max_intents,
             "items": {
                 "type": "object",
                 "properties": {
@@ -199,7 +199,7 @@ def enrich_llm(query: str, slots: Slots) -> tuple[list[Intent], list[str], dict]
     info: dict = {}
     answer = complete_json("enrich", {"query": query}, SCHEMA, stage="enrich", info=info)
     intents = []
-    for raw in (answer.get("intents") or [])[:3]:
+    for raw in (answer.get("intents") or [])[: settings.max_intents]:
         text = " ".join(scrub(str(raw.get("text") or "")).split())
         if not text:
             continue
@@ -234,7 +234,7 @@ VARIATIONS_SCHEMA = {
     "required": ["variations"],
     "additionalProperties": False,
 }
-_background = ThreadPoolExecutor(max_workers=4, thread_name_prefix="variations")
+_background = ThreadPoolExecutor(max_workers=settings.variations_workers, thread_name_prefix="variations")
 
 
 def _variations_llm(query: str) -> tuple[list[str], dict]:

@@ -14,7 +14,7 @@
       "key": "c9c140afccd300c8",
       "siis_hash": "4e765390aee789aa",
       "siis_title": "Email server not responding on Samsung phone or tablet",
-      "threshold": 0.8,
+      "threshold": 0.7,
       "similarity": null
     }
   },

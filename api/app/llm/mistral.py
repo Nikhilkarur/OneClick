@@ -1,8 +1,8 @@
 """Mistral client (JSON output).
 
-Plain REST over httpx (chat completions) with a strict JSON-schema response format. The fallback model
-is open-weight (Mistral Small 4, Apache 2.0) served by Mistral's API. Raises LLMCallError on anything
-that is not a usable JSON answer.
+Plain REST over httpx (chat completions) with a strict JSON-schema response format. On the free tier
+this serves call B (extract, Ministral 14B raced against 8B) and the background variations call; the
+Ministral models are open-weight. Raises LLMCallError on anything that is not a usable JSON answer.
 """
 
 import os
@@ -58,18 +58,20 @@ def call(
     key = os.getenv(KEY_ENV)
     if not key:
         raise LLMCallError("no_key", f"{KEY_ENV} is not set")
-    model = model or settings.fallback_model
+    model = model or settings.extract_model  # a Ministral model; the router always passes one
     http = client or httpx.Client()
     try:
         response = None
-        for optional in (True, False):  # retry once without reasoning_effort if the API rejects it
+        # A 400 on the optional knob (reasoning_effort) must not cost the answer: retry once without.
+        # Without the knob the retry would resend the same body, so a 400 is final.
+        for optional in (True, False):
             response = http.post(
                 API,
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json=_body(prompt, schema, model, max_tokens, optional),
                 timeout=timeout or settings.llm_timeout_default_s,
             )
-            if response.status_code != 400:
+            if response.status_code != 400 or not settings.fallback_reasoning:
                 break
     except httpx.TimeoutException as exc:
         raise LLMCallError("timeout", str(exc)) from exc

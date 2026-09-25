@@ -19,10 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# A measurement run must never read or write the API's real cache.sqlite.
-os.environ.setdefault(
-    "ONECLICK_SQLITE", str(Path(tempfile.mkdtemp(prefix="oneclick-results-")) / "cache.sqlite")
-)
+# A measurement run must never read or write the API's real cache.sqlite: every row calls
+# cache.clear(), so the path is always a throwaway, even when ONECLICK_SQLITE is exported.
+os.environ["ONECLICK_SQLITE"] = str(Path(tempfile.mkdtemp(prefix="oneclick-results-")) / "cache.sqlite")
 
 from app import cache
 from app.config import settings
@@ -37,14 +36,12 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--kit", type=Path, default=Path(settings.data_dir) / "kit" / "siis_responses.json")
+    parser.add_argument("--input", type=Path, default=Path(settings.data_dir) / "kit" / "input.txt")
     parser.add_argument("--out", type=Path, default=REPO / "results.jsonl")
-    parser.add_argument("--enrich-model", help="override settings.enrich_model for this run")
     parser.add_argument("--extract-model", help="override settings.extract_model for this run")
     parser.add_argument("--pause", type=float, default=0.0, help="seconds between queries (free-tier limits)")
     args = parser.parse_args()
 
-    if args.enrich_model:
-        settings.enrich_model = args.enrich_model
     if args.extract_model:
         settings.extract_model = args.extract_model
 
@@ -53,17 +50,22 @@ def main() -> None:
         sys.exit(f"engine not ready: {state['error']} (run scripts/build_screengraph.py and build_index.py)")
 
     rows = json.loads(args.kit.read_text(encoding="utf-8"))["responses"]
+    # The query is the organisers' input.txt line, as the scorer sends it; siis_responses.json
+    # keeps its own copy with "1. " prefixes and newlines, so it only supplies the article.
+    queries = [line.strip() for line in args.input.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(queries) != len(rows):
+        sys.exit(f"{args.input} has {len(queries)} queries but {args.kit} has {len(rows)} rows")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     empty, latencies = 0, []
     with args.out.open("w", encoding="utf-8", newline="\n") as out:
-        for n, row in enumerate(rows):
+        for n, (query, row) in enumerate(zip(queries, rows)):
             if n and args.pause:
                 time.sleep(args.pause)
             cache.clear()  # every line is a cold answer
-            body, variations = run_with_variations(row["original_query"], row.get("siis_response"))
+            body, variations = run_with_variations(query, row.get("siis_response"))
             meta = body.get("meta", {})
             line = {
-                "query": row["original_query"],
+                "query": query,
                 "query_variations": variations,
                 "response": {"contexts": body.get("contexts", [])},
                 "meta": meta,
