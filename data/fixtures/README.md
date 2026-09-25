@@ -25,8 +25,8 @@ data/fixtures/
 
 ## The mock stream (Nikhil)
 
-`POST /v1/troubleshoot/stream` with a `request.json` body. While the pipeline is a skeleton
-(`settings.stream_mock = True`) it replays these fixtures at their recorded timings. It is honest about it:
+`POST /v1/troubleshoot/stream` with a `request.json` body runs the real pipeline. With
+`settings.stream_mock = True` (demo only) it replays these fixtures at their recorded timings instead. It is honest about it:
 response header `X-Mock: true`, `detail.mock: true` on every frame, `meta.mock: true` in `done`. Show a mock
 badge when you see them. Match is by normalized query (list numbering and quotes are ignored), then by article
 title. A query with no fixture gets `cache` then an empty `done` (never an invented plan).
@@ -91,8 +91,8 @@ until your Screen Graph build defines them.
 
 ## Vishaal
 
-Compiler tests: feed `draft_actions.json` to `compile_goals` and compare to `plan.json`. When `segment.py` exists
-it should reproduce the `segment` event's `sentences` from the article: drop everything before the first `#`,
+Compiler tests: feed `draft_actions.json` to `compile_with_report` and compare to `plan.json`.
+`segment_with_sections` reproduces the `segment` event's `sentences` from the article: drop everything before the first `#`,
 split on `#` headers, split each remaining line into sentences on `[.!?]` followed by whitespace and a capital,
 number them `S1..Sn` across the article. If you choose a different rule, change the fixtures, not just the code.
 

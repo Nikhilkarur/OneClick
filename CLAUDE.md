@@ -6,7 +6,7 @@ Guidance for Claude Code (and humans) working in this repository. Shared by the 
 
 OneClick is a Smart Guided Troubleshooting engine for the Samsung PRISM GenAI Hackathon 2026 (Theme 2). A vague user complaint plus a SIIS knowledge article go in; a grounded, schema-valid troubleshooting plan with verified Galaxy Settings deeplinks comes out.
 
-The repo is currently a **skeleton**: package layout, shared contracts and docstrings are in place, and almost every function body is `raise NotImplementedError`. Each stub's docstring states which design component it implements (C1–C12) — treat it as the spec for that file and implement against it rather than inventing a new design.
+The engine is complete end to end and in freeze for the tag. Each module's docstring states which design component it implements (C1–C12); [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the design, and its last section lists where the submission differs from it. The only stubs left are the device simulator (`device/simulator.py`, `routes/device.py`), which is cut from the submission and on the roadmap.
 
 ## Commands
 
@@ -24,11 +24,11 @@ ruff check . && ruff format --check .                # lint (line-length 110, ta
 
 # Full stack
 cp .env.example .env                                 # GEMINI_API_KEY, MISTRAL_API_KEY
-docker compose up --build && curl localhost:8000/health
+docker compose up -d --build && curl localhost:8000/health
 
 # Offline builds (run from api/, in this order, before the API can resolve links)
 python scripts/build_screengraph.py   # clean catalog -> data/build/screengraph.json
-python scripts/build_index.py         # BM25 + vector index over Screen Graph nodes
+python scripts/build_index.py         # dense vectors over catalog entries (BM25 is built at startup)
 python scripts/make_results.py        # cold run over data/kit -> results.jsonl
 
 # Evaluation (run from repo root, against a running API)
@@ -39,9 +39,9 @@ python eval/judge.py          # step accuracy 0-3, deeplink relevance 0-2
 python eval/loadtest.py --mode api --api http://localhost:8000   # p50/p95 for repeat-hit, paraphrase-hit, cold
 python eval/report.py         # regenerates docs/metrics.md
 
-# Console stream: replays data/fixtures while the pipeline is a skeleton (run from repo root)
+# Console stream: runs the real pipeline, so it spends LLM quota (run from repo root)
 curl -N -X POST localhost:8000/v1/troubleshoot/stream -H "Content-Type: application/json" \
-     -d @data/fixtures/touch_lag/request.json          # ?mock=exact | ?mock=semantic for cache hits
+     -d @data/fixtures/touch_lag/request.json          # ?mock= only applies with settings.stream_mock on
 
 # Console (Next.js 16 + React 19 + Tailwind v4 — see console/README.md)
 cd console
@@ -63,12 +63,12 @@ normalize -> cache lookup -> enrich (LLM A) -> segment -> extract (LLM B)
 ```
 
 - **normalize / slots** — whitespace and numbering fixes (every line of a numbered kit query), URL/email scrub of the SIIS text **and the complaint** *before any LLM sees them*, `siis_hash`; slots come from `data/slot_lexicon.json`, never from an LLM. The scrub (`compiler/scrub.py`) canonicalises first (HTML entities, NFKC, invisible characters) and every pattern is length-bounded, so it stays linear on hostile input; keep it that way (no unbounded `+`/`*` before a required character).
-- **cache** — Tier 0 exact (`norm_query + siis_hash`), Tier 1 semantic (ANN over each solved plan's original query *and* its 8–10 variations). A hit requires similarity ≥ τ (0.70) **and** compatible slots (component, intent, one-sided symptom) **and** a matching SIIS hash. The SIIS cache ships empty.
+- **cache** — Tier 0 exact (`norm_query + siis_hash`), Tier 1 semantic (brute-force cosine over each solved plan's original query *and* its 8–10 variations). A hit requires similarity ≥ τ (0.70) **and** compatible slots (component, intent, one-sided symptom) **and** a matching SIIS hash. The SIIS cache ships empty.
 - **no article** — missing, `null`, `""`, `{}`, whitespace or title-only content is one case ([cache/no_siis.py](api/app/cache/no_siis.py)): the same question answered before → a cached plan from the kit table (results.jsonl, loaded at startup) or any solved plan, similarity ≥ 0.80 + slot guard (`source: cached_plan`) → the full pipeline over a remembered article (every article the API receives, the kit's pre-loaded), similarity ≥ 0.82 and 0.04 ahead of the runner-up, scores scaled by that similarity (`source: retrieved_article`) → otherwise empty. All three carry `fallback: no_siis_context`. The LLM never fills the gap (FAQ Q14, G5). `no_match` is only for "an article was given and nothing survived grounding".
 - **enrich** — canonical query, 1–3 intents, domain, 2–3 word title, 12 candidate variations filtered down to 8–10 (drop token Jaccard ≥ 0.6, drop embedding cosine < 0.6).
 - **segment / extract** — SIIS split into sections and numbered sentences `S1…Sn`; the LLM returns actions whose every step cites sentence ids.
 - **ground** — a step survives only if it clears the embedding threshold against its cited sentences **and** shares a content term with them. Failing steps are dropped; actions left empty are dropped.
-- **resolve** — `screen_path + verb` → BM25 + dense → RRF → rerank → Screen Graph node → entry chosen by polarity. Tiered outcome: catalog link, `bixby://dummy_positive`, or manual.
+- **resolve** — `screen_path + verb` → BM25 + dense over catalog entries → RRF (cross-encoder rerank off, `use_rerank`) → Screen Graph screen → entry chosen by polarity. Tiered outcome: catalog link, `bixby://dummy_positive`, or manual.
 - **compile / validate** — builds the official `ContextDeeplinkResponse`, then URL scrub → schema validation → one repair cycle → drop the offending action.
 
 The endpoints are listed in [README.md](README.md); the full design lives in `docs/Smart Guided Troubleshooting Engine - Architecture & System Design.pdf` and should be exported into [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -124,10 +124,9 @@ Stay in your lane; needed changes elsewhere go through a GitHub issue tagging th
 ## Gotchas
 
 - `data/build/` is gitignored, so the Screen Graph and indexes are never committed — build them locally (and bake them into the image) before expecting link resolution to work.
-- The docker build context is the repo root, but the image copies only `data/kit/`: `data/slot_lexicon.json`, `data/dependencies.json` and `data/fixtures/` are **not** in it (the engine degrades without them: no slots, no dependency ordering, no mock stream). `pipeline/slots.py` also hard-codes its lexicon path instead of using `settings.data_dir`.
+- The docker build context is the repo root. The image copies `data/kit/`, `slot_lexicon.json`, `dependencies.json` and `appliance_exclusions.json` into `/data` and builds the Screen Graph and vectors itself; `data/fixtures/` is **not** in it, so the mock stream only works from a checkout.
 - `/health` returns 503 until the catalog, Screen Graph, vector index and cache snapshot are loaded (`app/obs/readiness.py`). Startup also pre-warms the no-article path (~2 s): the kit table from `results.jsonl` and the 11 kit articles. The Docker image must contain `results.jsonl` (`/data/results.jsonl`, or set `ONECLICK_RESULTS`); without it the kit table is empty and only article memory answers.
-- `cache.sqlite` (default `sqlite_path`) is written into whatever directory the API is started from, and the API reloads it at boot. A leftover file makes the next gate-replica run start warm, so delete it (or set `ONECLICK_SQLITE`) before measuring cold numbers. Tests (`api/tests/conftest.py`) and `scripts/make_results.py` use a throwaway file and blank LLM keys, so they never warm the dev cache or spend quota.
-- README links a `CONTRIBUTING.md` that does not exist yet.
+- `cache.sqlite` (default `sqlite_path`) is written into whatever directory the API is started from, and the API reloads it at boot. A leftover file makes the next gate-replica run start warm, so delete it (or set `ONECLICK_SQLITE`) before measuring cold numbers. Tests (`api/tests/conftest.py`) use a throwaway file and blank LLM keys, so they never warm the dev cache or spend quota. `scripts/make_results.py` always uses a throwaway file (it clears the cache before every row) but needs the real keys: it is the submission run.
 - `results.jsonl` at the repo root is generated by `scripts/make_results.py`; it is the submission artefact, not a scratch file.
 - `POST /v1/troubleshoot/stream` runs the real pipeline (`pipeline.run.run_stream`); `/v1/troubleshoot` drains the same generator, so the two can never disagree. Setting `settings.stream_mock = True` replays [data/fixtures/](data/fixtures/README.md) instead, with frames marked `X-Mock: true` / `detail.mock`; that only works when the API runs from the repo.
 - `data/fixtures/` is a contract for Karur and Nikhil, guarded by [api/tests/test_fixtures.py](api/tests/test_fixtures.py): official schema, zero URLs, verbatim catalog links, every step traced to a real article sentence, the score formula. If you change a fixture, keep those tests green and tell the other lanes.

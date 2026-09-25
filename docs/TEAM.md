@@ -84,7 +84,7 @@ Final pass on every response (including cache hits): URL regex scrub → officia
 
 **LLM router (ADR-002).** Gemini Flash-class primary, Mistral fallback on 3 s timeout or error, temperature 0, versioned prompts (prompt version is part of the cache key). Records tokens and cost per call.
 
-**Degrade paths.** Enrichment fails → normalized query as sole intent, template variations. Extraction fails → rules-only steps from top sections, score capped at 0.5. No step survives grounding → empty `contexts`, `fallback: no_match`. Stage budgets: enrich 2.5 s, extract 3.5 s.
+**Degrade paths.** Enrichment fails → normalized query as sole intent, template variations. Extraction fails → rules-only steps from top sections, score capped at 0.5. No step survives grounding → empty `contexts`, `fallback: no_match`. Stage budgets: enrich 2.5 s, extract 3.5 s (submission, on free tiers: enrich off the critical path, extract 7.0 s; see `config.py` and the last section of ARCHITECTURE.md).
 
 **Orchestrator (`pipeline/run.py`).** normalize → cache lookup (Karur) → enrich → segment → extract → ground → resolve (Karur) → categorize → order → multi-intent → compile → validate → cache write (Karur).
 
